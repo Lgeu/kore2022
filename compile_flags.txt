@@ -1,0 +1,8 @@
+-std=c++17
+-Wall 
+-Wextra
+-pedantic
+-Wno-unused-variable
+-Wno-unused-function
+-march=native
+-pthread
