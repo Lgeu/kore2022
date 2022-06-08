@@ -1,6 +1,8 @@
 #pragma once
 #include "../marathon/library.hpp"
 #include <cassert>
+#include <cstddef>
+#include <istream>
 #include <map>
 #include <set>
 #include <string>
@@ -58,6 +60,7 @@ struct Cell {
     double kore_;
     ShipyardId shipyard_id_;
     FleetId fleet_id_;
+    Cell() : kore_(), shipyard_id_(-1), fleet_id_(-1) {}
 };
 
 struct Fleet {
@@ -68,6 +71,18 @@ struct Fleet {
     double kore_; // int でええんか
     string flight_plan_;
     PlayerId player_id_;
+
+    Fleet(const FleetId id, const short ship_count, const Direction direction,
+          const Point position, const double kore, const string flight_plan,
+          const PlayerId player_id)
+        : id_(id), ship_count_(ship_count), direction_(direction),
+          position_(position), kore_(kore), flight_plan_(flight_plan),
+          player_id_(player_id) {}
+
+    Fleet(const FleetId id, const PlayerId player_id, istream& is)
+        : id_(id), player_id_(player_id) {
+        Read(is);
+    }
 
     double CollectionRate() const { return min(log(ship_count_) * 0.05, 0.99); }
 
@@ -81,6 +96,25 @@ struct Fleet {
         if (kore_ != other.kore_)
             return kore_ < other.kore_;
         return (int)direction_ > (int)other.direction_;
+    }
+
+    auto Same(const Fleet& rhs) const {
+        return ship_count_ == rhs.ship_count_ && direction_ == rhs.direction_ &&
+               position_ == rhs.position_ && kore_ == rhs.kore_ &&
+               flight_plan_ == rhs.flight_plan_ && player_id_ == rhs.player_id_;
+    }
+
+    Fleet& Read(istream& is) {
+        // id_ と player_id_ は設定されない
+        auto position_raw = 0;
+        auto direction_raw = 0;
+        is >> position_raw >> kore_ >> ship_count_ >> direction_raw >>
+            flight_plan_;
+        position_ = Point{position_raw / kSize, position_raw % kSize};
+        direction_ = (Direction)direction_raw; // TODO: 確認
+        if (strcmp(flight_plan_.c_str(), "null"))
+            flight_plan_ = "";
+        return *this;
     }
 };
 
@@ -141,6 +175,16 @@ struct Shipyard {
     PlayerId player_id_;
     int turns_controlled_;
 
+    Shipyard(const ShipyardId id, const int ship_count, const Point position,
+             const PlayerId player_id, const int turns_controlled)
+        : id_(id), ship_count_(ship_count), position_(position),
+          player_id_(player_id), turns_controlled_(turns_controlled) {}
+
+    Shipyard(const ShipyardId id, const PlayerId player_id, istream& is)
+        : id_(id), player_id_(player_id) {
+        Read(is);
+    }
+
     int MaxSpawn() const {
         for (int i = 0; i < (int)kSpawnValues.size(); i++) {
             if (turns_controlled_ < kSpawnValues[i]) {
@@ -148,6 +192,20 @@ struct Shipyard {
             }
         }
         return kSpawnValues.size() + 1;
+    }
+
+    auto Same(const Shipyard& rhs) const {
+        return ship_count_ == rhs.ship_count_ && position_ == rhs.position_ &&
+               player_id_ == rhs.player_id_ &&
+               turns_controlled_ == rhs.turns_controlled_;
+    }
+
+    Shipyard& Read(istream& is) {
+        // id_ と player_id_ は設定されない
+        auto position_raw = 0;
+        is >> ship_count_ >> position_raw >> turns_controlled_;
+        position_ = Point{position_raw / kSize, position_raw % 21};
+        return *this;
     }
 };
 
@@ -158,13 +216,39 @@ struct Player {
     set<FleetId> fleet_ids_;
 };
 
-// 方針: バグりにくいようにする
-// どうせ MCTS 用にまた別で書くので
+template <typename InternalId> struct IdMapper {
+    unordered_map<string, InternalId> external_to_internal_;
+    unordered_map<InternalId, string> internal_to_external_;
 
-// 盤面を表す文字列から内部の状態にはできるべき
+    void AddData(const string& external_id, const InternalId& internal_id) {
+        external_to_internal_[external_id] = internal_id;
+        internal_to_external_[internal_id] = external_id;
+    }
+    auto ExternalToInternal(const string& external_id) const {
+        return external_to_internal_.at(external_id);
+    }
+    auto InternalToExternal(const InternalId& internal_id) const {
+        return internal_to_external_.at(internal_id);
+    }
+};
 
 struct Action {
-    vector<ShipyardAction> actions;
+    map<ShipyardId, ShipyardAction> actions;
+
+    auto& Read(const IdMapper<ShipyardId>& shipyard_id_mapper, istream& is) {
+        for (auto player_id = 0; player_id < 2; player_id++) {
+            int n_shipyards;
+            is >> n_shipyards;
+            for (auto i = 0; i < n_shipyards; i++) {
+                string external_shipyard_id, action_raw;
+                is >> external_shipyard_id >> action_raw;
+                const auto shipyard_id =
+                    shipyard_id_mapper.ExternalToInternal(external_shipyard_id);
+                actions[shipyard_id] = ShipyardAction(action_raw);
+            }
+        }
+        return *this;
+    }
 };
 
 struct State {
@@ -173,6 +257,11 @@ struct State {
     map<FleetId, Fleet> fleets_;
     map<ShipyardId, Shipyard> shipyards_;
     Board<Cell, kSize, kSize> board_;
+
+    IdMapper<ShipyardId> shipyard_id_mapper_;
+    IdMapper<FleetId> fleet_id_mapper_;
+    FleetId next_fleet_id_;
+    ShipyardId next_shipyard_id_;
 
     State(const Observation& observation) {
         // TODO
@@ -192,6 +281,67 @@ struct State {
                 AddShipyard(shipyard);
             }
         }
+    }
+
+    void Read(istream& is) {
+        // 初期状態を仮定
+        for (auto y = 0; y < kSize; y++) {
+            for (auto x = 0; x < kSize; x++) {
+                is >> board_[{y, x}].kore_;
+            }
+        }
+        for (auto player_id = 0; player_id < 2; player_id++) {
+            auto& player = players_[player_id];
+            double remaining_time; // 使わない？
+            is >> remaining_time;
+            is >> player.kore_;
+            auto n_shipyards = 0;
+            is >> n_shipyards;
+            for (auto i = 0; i < n_shipyards; i++) {
+                string external_shipyard_id;
+                is >> external_shipyard_id;
+                const auto shipyard_id = next_shipyard_id_++;
+                shipyard_id_mapper_.AddData(external_shipyard_id, shipyard_id);
+                AddShipyard(Shipyard(shipyard_id, player_id, is));
+            }
+            auto n_fleets = 0;
+            is >> n_fleets;
+            for (auto i = 0; i < n_fleets; i++) {
+                string external_fleet_id;
+                is >> external_fleet_id;
+                const auto fleet_id = next_fleet_id_++;
+                fleet_id_mapper_.AddData(external_fleet_id, fleet_id);
+                AddFleet(Fleet(fleet_id, player_id, is));
+            }
+        }
+    }
+
+    auto Same(const State& rhs) const {
+        if (step_ != rhs.step_)
+            return false;
+
+        for (auto y = 0; y < kSize; y++) {
+            for (auto x = 0; x < kSize; x++) {
+                const auto& cell = board_[{y, x}];
+                const auto& rhs_cell = rhs.board_[{y, x}];
+                if (cell.kore_ != rhs_cell.kore_)
+                    return false;
+                if ((cell.fleet_id_ == -1) != (rhs_cell.fleet_id_ == -1))
+                    return false;
+                if (cell.fleet_id_ != -1 &&
+                    !fleets_.at(cell.fleet_id_)
+                         .Same(rhs.fleets_.at(rhs_cell.fleet_id_)))
+                    return false;
+
+                if ((cell.shipyard_id_ == -1) != (rhs_cell.shipyard_id_ == -1))
+                    return false;
+                if (cell.shipyard_id_ != -1 &&
+                    !shipyards_.at(cell.shipyard_id_)
+                         .Same(rhs.shipyards_.at(rhs_cell.shipyard_id_)))
+                    return false;
+            }
+        }
+        return true;
     }
 
     void AddFleet(const Fleet& fleet) {
@@ -228,15 +378,19 @@ struct State {
         shipyards_.erase(shipyard.id_);
     }
 
-    auto Next(const Action& action) const {
+    auto Next(istream& is) const {
+        return Next(Action().Read(shipyard_id_mapper_, is));
+    }
+
+    State Next(const Action& action) const {
         auto state = *this;
-        auto n_fleets = (short)0; // あーこれだめじゃん TODO
-        auto n_shipyards = (short)0;
+        // auto n_fleets = (short)0; // あーこれだめじゃん TODO
+        // auto n_shipyards = (short)0;
         for (PlayerId player_id = 0; player_id < 2; player_id++) {
             auto& player = state.players_[player_id];
             for (const auto& shipyard_id : player.shipyard_ids_) {
                 auto& shipyard = state.shipyards_[shipyard_id];
-                const auto& shipyard_action = action.actions[shipyard_id];
+                const auto& shipyard_action = action.actions.at(shipyard_id);
                 if (shipyard_action.num_ships_ == 0) {
                     continue;
                 } else if (shipyard_action.type_ ==
@@ -262,7 +416,7 @@ struct State {
                             // 元の実装だと縮めてるけどこの実装だとスキップする
                             cerr << "Next: flight_plan が長すぎ" << endl;
                         } else {
-                            state.AddFleet(Fleet{n_fleets++,
+                            state.AddFleet(Fleet{state.next_fleet_id_++,
                                                  shipyard_action.num_ships_,
                                                  direction, shipyard.position_,
                                                  0, flight_plan, player_id});
@@ -301,9 +455,9 @@ struct State {
                 state.board_[fleet.position_].shipyard_id_ == -1) {
                 state.players_[fleet.player_id_].kore_ += fleet.kore_;
                 state.board_[fleet.position_].kore_ = 0;
-                state.AddShipyard(
-                    Shipyard{n_shipyards++, fleet.ship_count_ - kConvertCost,
-                             fleet.position_, fleet.player_id_, 0});
+                state.AddShipyard(Shipyard{
+                    state.next_shipyard_id_++, fleet.ship_count_ - kConvertCost,
+                    fleet.position_, fleet.player_id_, 0});
                 it++; // 削除する前にイテレータを進める
                 state.DeleteFleet(fleet);
                 continue;
@@ -443,8 +597,8 @@ struct State {
                     const auto count = fleet.ship_count_ - shipyard.ship_count_;
                     assert(fleet.position_ == shipyard.position_);
                     state.DeleteShipyard(shipyard);
-                    state.AddShipyard({n_shipyards++, count, fleet.position_,
-                                       fleet.player_id_, 1});
+                    state.AddShipyard({state.next_shipyard_id_++, count,
+                                       fleet.position_, fleet.player_id_, 1});
                     state.players_[fleet.player_id_].kore_ += fleet.kore_;
                     state.DeleteFleet(fleet);
                 } else {
