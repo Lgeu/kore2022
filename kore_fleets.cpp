@@ -232,6 +232,7 @@ template <typename InternalId> struct IdMapper {
     }
 };
 
+// 2 プレイヤー分を同時に持つこともある
 struct Action {
     map<ShipyardId, ShipyardAction> actions;
 
@@ -249,6 +250,16 @@ struct Action {
         }
         return *this;
     }
+
+    void Write(const IdMapper<ShipyardId>& shipyard_id_mapper,
+               ostream& os) const {
+        os << actions.size() << endl;
+        for (const auto& [shipyard_id, action] : actions) {
+            const auto external_shipyard_id =
+                shipyard_id_mapper.InternalToExternal(shipyard_id);
+            os << external_shipyard_id << " " << action.Str() << endl;
+        }
+    }
 };
 
 struct State {
@@ -263,28 +274,31 @@ struct State {
     FleetId next_fleet_id_;
     ShipyardId next_shipyard_id_;
 
-    State(const Observation& observation) {
-        // TODO
-        for (auto y = 0; y < kSize; y++) {
-            for (auto x = 0; x < kSize; x++) {
-                const auto kore = observation.kore[position.to_index(size)]; //
-                board_[{y, x}] = Cell(kore, -1, -1);
-            }
-        }
-        for (PlayerId player_id = 0; player_id < 2; player_id++) {
-            const auto& player_observation = observation.players[player_id]; //
-            players_[player_id] = {player_id, player_observation.player_kore};
-            for (const auto& fleet : player_observation.player_fleets) {
-                AddFleet(fleet);
-            }
-            for (const auto& shipyard : player_observation.player_shipyards) {
-                AddShipyard(shipyard);
-            }
-        }
-    }
+    // State(const Observation& observation) {
+    //     // TODO
+    //     for (auto y = 0; y < kSize; y++) {
+    //         for (auto x = 0; x < kSize; x++) {
+    //             const auto kore = observation.kore[position.to_index(size)];
+    //             // board_[{y, x}] = Cell(kore, -1, -1);
+    //         }
+    //     }
+    //     for (PlayerId player_id = 0; player_id < 2; player_id++) {
+    //         const auto& player_observation = observation.players[player_id];
+    //         // players_[player_id] = {player_id,
+    //         player_observation.player_kore}; for (const auto& fleet :
+    //         player_observation.player_fleets) {
+    //             AddFleet(fleet);
+    //         }
+    //         for (const auto& shipyard : player_observation.player_shipyards)
+    //         {
+    //             AddShipyard(shipyard);
+    //         }
+    //     }
+    // }
 
-    void Read(istream& is) {
+    auto& Read(istream& is) {
         // 初期状態を仮定
+        is >> step_;
         for (auto y = 0; y < kSize; y++) {
             for (auto x = 0; x < kSize; x++) {
                 is >> board_[{y, x}].kore_;
@@ -314,6 +328,7 @@ struct State {
                 AddFleet(Fleet(fleet_id, player_id, is));
             }
         }
+        return *this;
     }
 
     auto Same(const State& rhs) const {
@@ -700,31 +715,99 @@ struct State {
     }
 };
 
-auto PopulateBoard() {
-    auto seed = 3253151351u;
+struct KifHeader {
+    string format_version;
+    string kif_id;
+    array<string, 2> players_info;
 
-    constexpr auto half = (kSize + 1) / 2;
-    auto grid = Board<double, kSize, kSize>();
-    grid.Fill(0.0);
-    static auto rng = Random(seed);
-    for (auto i = 0; i < half; i++) {
-        grid[{rng.randint(0, half), rng.randint(0, half)}] = i * i;
-        grid[{rng.randint(half / 2, half), rng.randint(half / 2, half)}] =
-            i * i;
+    auto& Read(istream& is) {
+        getline(is, format_version);
+        getline(is, kif_id);
+        for (auto i = 0; i < 2; i++)
+            getline(is, players_info[i]);
+        return *this;
     }
-    auto radius_grid = grid;
-    for (auto r = 0; r < half; r++) {
-        for (auto c = 0; c < half; c++) {
-            const auto value = grid[{r, c}];
-            if (value == 0)
-                continue;
-            const auto radius = min((int)round(sqrt(value / half)), 1);
-            if (radius < 1)
-                continue;
-            radius_grid[{r, c}] = grid[{r, c}];
+};
+
+struct Agent {
+    Action ComputeNextMove(const State& state) const {
+        // TODO
+    }
+};
+
+// 対戦するときのインタフェース、チェックするときの、次の一手するときの
+struct Game {
+    State state;
+    Agent agent;
+
+    // 状態を読み込む
+    void ReadState(istream& is) { state.Read(is); }
+
+    // 行動を読み込んで次の状態に遷移する
+    void ReadAction(istream& is) {
+        state = state.Next(Action().Read(state.shipyard_id_mapper_, is));
+    }
+
+    // 棋譜の行動によって次の状態に正しく遷移できるか確認
+    void ValidateKif(istream& is) {
+        // ヘッダを読み捨てる
+        KifHeader().Read(is);
+
+        // 罫線を読み捨てる
+        string line;
+        is >> line; // "==="
+
+        // 0 ターン目の行動を読み捨てる
+        int zero0, zero1;
+        is >> zero0 >> zero1;
+
+        // 最初の状態を読み取る
+        state.Read(is);
+
+        while (true) {
+            is >> line; // "---"
+            if (line[0] == '=')
+                break;
+            auto action = Action().Read(state.shipyard_id_mapper_, is);
+            state = state.Next(action);
+            const auto input_state = State().Read(is);
+            assert(state.Same(input_state));
         }
     }
-    // TODO
-}
 
-static double CheckPath() {}
+    // 対戦する
+    void Match() {
+        state.Read(cin);
+        auto action = agent.ComputeNextMove(state);
+        action.Write(state.shipyard_id_mapper_, cout);
+    }
+};
+
+// =========================================
+
+// auto PopulateBoard() {
+//     auto seed = 3253151351u;
+
+//     constexpr auto half = (kSize + 1) / 2;
+//     auto grid = Board<double, kSize, kSize>();
+//     grid.Fill(0.0);
+//     static auto rng = Random(seed);
+//     for (auto i = 0; i < half; i++) {
+//         grid[{rng.randint(0, half), rng.randint(0, half)}] = i * i;
+//         grid[{rng.randint(half / 2, half), rng.randint(half / 2, half)}] =
+//             i * i;
+//     }
+//     auto radius_grid = grid;
+//     for (auto r = 0; r < half; r++) {
+//         for (auto c = 0; c < half; c++) {
+//             const auto value = grid[{r, c}];
+//             if (value == 0)
+//                 continue;
+//             const auto radius = min((int)round(sqrt(value / half)), 1);
+//             if (radius < 1)
+//                 continue;
+//             radius_grid[{r, c}] = grid[{r, c}];
+//         }
+//     }
+//     // TODO
+// }
