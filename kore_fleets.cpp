@@ -34,6 +34,18 @@ static auto IsClose(const double a, const double b) {
     return abs(a - b) <= max(abs(a), abs(b)) * 1e-9;
 }
 
+// cell の kore が x.x25 か x.x75 のとき、1.02 倍するとちょうど x.xxx5 になって
+// round がやばい
+// Python の round は正確にやるために一旦文字列に起こしてるっぽい
+// https://github.com/python/cpython/blob/3.7/Objects/floatobject.c
+static auto Round3(const double a) {
+    const auto y = (long double)a * 1e3;
+    auto z = round(y);
+    if (abs(y - z) == 0.5)
+        z = 2.0 * round(y / 2.0);
+    return (double)(z / 1e3);
+}
+
 static auto CharToDirection(const char c) {
     cerr << "CharToDirection: " << c << endl;
     switch (c) {
@@ -64,10 +76,10 @@ static Point GetToPos(const Point v, const Direction direction) {
                                 : Point{0, v.x};
     case Direction::E:
         return v.x != kSize - 1 ? Point{v.y, (Point::value_type)(v.x + 1)}
-                                : Point{v.x, 0};
+                                : Point{v.y, 0};
     case Direction::W:
         return v.x != 0 ? Point{v.y, (Point::value_type)(v.x - 1)}
-                        : Point{v.x, (Point::value_type)(kSize - 1)};
+                        : Point{v.y, (Point::value_type)(kSize - 1)};
     default:
         assert(false);
     }
@@ -254,7 +266,8 @@ template <typename InternalId> struct IdMapper {
         internal_to_external_[internal_id] = external_id;
     }
     auto ExternalToInternal(const string& external_id) const {
-        return external_to_internal_.at(external_id);
+        return external_to_internal_.at(
+            external_id); // 外部の番号違うのあたりまえなんだよな、どうしよ
     }
     auto InternalToExternal(const InternalId& internal_id) const {
         return internal_to_external_.at(internal_id);
@@ -442,8 +455,6 @@ struct State {
 
     State Next(const Action& action) const {
         auto state = *this;
-        // auto n_fleets = (short)0; // あーこれだめじゃん TODO
-        // auto n_shipyards = (short)0;
         if (state.step_ == 11) {
             cerr << "step 11" << endl;
         }
@@ -451,7 +462,10 @@ struct State {
             auto& player = state.players_[player_id];
             for (const auto& shipyard_id : player.shipyard_ids_) {
                 auto& shipyard = state.shipyards_.at(shipyard_id);
-                const auto& shipyard_action = action.actions.at(shipyard_id);
+                const auto it = action.actions.find(shipyard_id);
+                if (it == action.actions.end())
+                    continue;
+                const auto& shipyard_action = it->second;
                 if (shipyard_action.num_ships_ == 0) {
                     continue;
                 } else if (shipyard_action.type_ ==
@@ -752,7 +766,8 @@ struct State {
             if (cell.fleet_id_ == -1 && cell.shipyard_id_ == -1) {
                 if (cell.kore_ < kMaxRegenCellKore) {
                     cell.kore_ =
-                        round(cell.kore_ * (1.0 + kRegenRate) * 1e3) * 1e-3;
+                        // round(cell.kore_ * (1.0 + kRegenRate) * 1e3) * 1e-3;
+                        Round3(cell.kore_ * (1.0 + kRegenRate));
                 }
             }
         }
@@ -821,6 +836,7 @@ struct Game {
             state = state.Next(action);
             const auto input_state = State().Read(is);
             assert(state.Same(input_state));
+            state = input_state;
         }
     }
 
