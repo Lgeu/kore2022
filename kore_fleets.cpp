@@ -23,6 +23,10 @@ using FleetId = short;
 using ShipyardId = short;
 using PlayerId = short;
 
+template <> struct std::hash<Point> {
+    size_t operator()(const Point& key) const { return key.y * 256 + key.x; }
+};
+
 enum struct Direction { N, E, S, W };
 enum struct ShipyardActionType { kSpawn, kLaunch };
 
@@ -237,6 +241,7 @@ struct Action {
     map<ShipyardId, ShipyardAction> actions;
 
     auto& Read(const IdMapper<ShipyardId>& shipyard_id_mapper, istream& is) {
+        assert(actions.size() == 0);
         for (auto player_id = 0; player_id < 2; player_id++) {
             int n_shipyards;
             is >> n_shipyards;
@@ -245,7 +250,9 @@ struct Action {
                 is >> external_shipyard_id >> action_raw;
                 const auto shipyard_id =
                     shipyard_id_mapper.ExternalToInternal(external_shipyard_id);
-                actions[shipyard_id] = ShipyardAction(action_raw);
+                const auto [it, emplaced] =
+                    actions.try_emplace(shipyard_id, action_raw);
+                assert(emplaced);
             }
         }
         return *this;
@@ -362,7 +369,8 @@ struct State {
     void AddFleet(const Fleet& fleet) {
         players_[fleet.player_id_].fleet_ids_.insert(fleet.id_);
         board_[fleet.position_].fleet_id_ = fleet.id_;
-        fleets_[fleet.id_] = fleet;
+        const auto [it, inserted] = fleets_.insert(make_pair(fleet.id_, fleet));
+        assert(inserted);
     }
 
     void AddShipyard(const Shipyard& shipyard) {
@@ -370,7 +378,9 @@ struct State {
         assert(board_[shipyard.position_].shipyard_id_ == -1);
         board_[shipyard.position_].shipyard_id_ = shipyard.id_;
         board_[shipyard.position_].kore_ = 0.0;
-        shipyards_[shipyard.id_] = shipyard;
+        const auto [it, inserted] =
+            shipyards_.insert(make_pair(shipyard.id_, shipyard));
+        assert(inserted);
     }
 
     void DeleteFleet(const Fleet& fleet) {
@@ -404,7 +414,7 @@ struct State {
         for (PlayerId player_id = 0; player_id < 2; player_id++) {
             auto& player = state.players_[player_id];
             for (const auto& shipyard_id : player.shipyard_ids_) {
-                auto& shipyard = state.shipyards_[shipyard_id];
+                auto& shipyard = state.shipyards_.at(shipyard_id);
                 const auto& shipyard_action = action.actions.at(shipyard_id);
                 if (shipyard_action.num_ships_ == 0) {
                     continue;
@@ -508,8 +518,8 @@ struct State {
 
         const auto combine_fleets = [&state](const FleetId fid1,
                                              const FleetId fid2) {
-            auto& f1 = state.fleets_[fid1];
-            auto& f2 = state.fleets_[fid2];
+            auto& f1 = state.fleets_.at(fid1);
+            auto& f2 = state.fleets_.at(fid2);
             if (f1.LessThanOtherAlliedFleet(f2)) {
                 assert(false);
                 f2.kore_ += f1.kore_;
@@ -527,16 +537,16 @@ struct State {
         // プレイヤーごと場所ごとに fleet を集める
         for (PlayerId player_id = 0; player_id < 2; player_id++) {
             const auto& player = state.players_[player_id];
-            auto fleets_by_loc = map<Point, vector<FleetId>>();
+            auto fleets_by_loc = unordered_map<Point, vector<FleetId>>();
             for (const auto& fleet_id : player.fleet_ids_)
-                fleets_by_loc[state.fleets_[fleet_id].position_].push_back(
-                    fleet_id);
-            for (const auto& [_, value] : fleets_by_loc) {
+                fleets_by_loc.at(state.fleets_.at(fleet_id).position_)
+                    .push_back(fleet_id);
+            for (auto&& [_, value] : fleets_by_loc) {
                 // これソートいらないかと思いきや 3 つ同時とかだと必要になる
                 sort(value.begin(), value.end(),
                      [&state](const FleetId& l, const FleetId& r) {
-                         return state.fleets_[r].LessThanOtherAlliedFleet(
-                             state.fleets_[l]);
+                         return state.fleets_.at(r).LessThanOtherAlliedFleet(
+                             state.fleets_.at(l));
                      });
                 const auto fid = value[0];
                 for (auto i = 0; i < (int)value.size(); i++) {
@@ -556,8 +566,8 @@ struct State {
             assert(fleets.size() == 2);
             const auto& fid0 = fleets[0];
             const auto& fid1 = fleets[1];
-            const auto ship_count_0 = state.fleets_[fid0].ship_count_;
-            const auto ship_count_1 = state.fleets_[fid1].ship_count_;
+            const auto ship_count_0 = state.fleets_.at(fid0).ship_count_;
+            const auto ship_count_1 = state.fleets_.at(fid1).ship_count_;
             if (ship_count_0 < ship_count_1)
                 return Result{fid1, {fid0}};
             else if (ship_count_0 > ship_count_1)
@@ -567,7 +577,7 @@ struct State {
         };
 
         // 艦隊同士の衝突
-        auto fleet_collision_groups = map<Point, vector<FleetId>>();
+        auto fleet_collision_groups = unordered_map<Point, vector<FleetId>>();
         for (const auto& [fleet_id, fleet] : state.fleets_) {
             fleet_collision_groups[fleet.position_].push_back(fleet_id);
         }
@@ -579,19 +589,20 @@ struct State {
             if (winner != -1) {
                 state.board_[position].fleet_id_ = winner;
                 const auto max_enemy_size =
-                    deleted.size() == 0 ? (short)0
-                                        : state.fleets_[deleted[0]].ship_count_;
-                state.fleets_[winner].ship_count_ -= max_enemy_size;
+                    deleted.size() == 0
+                        ? (short)0
+                        : state.fleets_.at(deleted[0]).ship_count_;
+                state.fleets_.at(winner).ship_count_ -= max_enemy_size;
             }
             for (const auto& fleet_id : deleted) {
-                const auto fleet = state.fleets_[fleet_id];
+                const auto fleet = state.fleets_.at(fleet_id);
                 state.DeleteFleet(fleet);
                 if (winner != -1) {
-                    state.fleets_[winner].kore_ += fleet.kore_;
+                    state.fleets_.at(winner).kore_ += fleet.kore_;
                 } else if (shipyard_id != -1 &&
-                           state.shipyards_[shipyard_id].player_id_ !=
+                           state.shipyards_.at(shipyard_id).player_id_ !=
                                -1) { // player の条件いる？
-                    state.players_[state.shipyards_[shipyard_id].player_id_]
+                    state.players_[state.shipyards_.at(shipyard_id).player_id_]
                         .kore_ += fleet.kore_;
                 } else {
                     state.board_[position].kore_ += fleet.kore_;
@@ -606,8 +617,8 @@ struct State {
             it++;
             const auto& fleet_id = state.board_[shipyard.position_].fleet_id_;
             if (fleet_id != -1 &&
-                state.fleets_[fleet_id].player_id_ != shipyard.player_id_) {
-                const auto& fleet = state.fleets_[fleet_id];
+                state.fleets_.at(fleet_id).player_id_ != shipyard.player_id_) {
+                const auto& fleet = state.fleets_.at(fleet_id);
                 if (fleet.ship_count_ > shipyard.ship_count_) {
                     const auto count = fleet.ship_count_ - shipyard.ship_count_;
                     assert(fleet.position_ == shipyard.position_);
@@ -628,7 +639,7 @@ struct State {
         for (auto&& [_, shipyard] : state.shipyards_) {
             const auto& fleet_id = state.board_[shipyard.position_].fleet_id_;
             if (fleet_id != -1) {
-                const auto& fleet = state.fleets_[fleet_id];
+                const auto& fleet = state.fleets_.at(fleet_id);
                 assert(fleet.player_id_ == shipyard.player_id_);
                 state.players_[shipyard.player_id_].kore_ += fleet.kore_;
                 shipyard.ship_count_ += fleet.ship_count_;
@@ -644,7 +655,7 @@ struct State {
                 const auto curr_pos = GetToPos(fleet.position_, direction);
                 const auto& fleet_id_at_pos = state.board_[curr_pos].fleet_id_;
                 if (fleet_id_at_pos != -1 &&
-                    state.fleets_[fleet_id_at_pos].player_id_ !=
+                    state.fleets_.at(fleet_id_at_pos).player_id_ !=
                         fleet.player_id_) {
                     incoming_fleet_dmg[fleet_id_at_pos][fleet.id_] =
                         fleet.ship_count_;
@@ -654,9 +665,10 @@ struct State {
 
         // 隣接した攻撃で撃沈したら、kore の 1/2 をその場に落とし、
         // 残りを与えたダメージ量に比例して周りの艦隊に分配する
-        auto to_distribute = map<FleetId, map<Point, double>>();
+        auto to_distribute =
+            unordered_map<FleetId, unordered_map<Point, double>>();
         for (const auto& [fleet_id, fleet_dmg_dict] : incoming_fleet_dmg) {
-            auto& fleet = state.fleets_[fleet_id];
+            auto& fleet = state.fleets_.at(fleet_id);
             auto damage = 0;
             for (const auto& [_, dmg] : fleet_dmg_dict)
                 damage += dmg;
@@ -732,6 +744,7 @@ struct KifHeader {
 struct Agent {
     Action ComputeNextMove(const State& state) const {
         // TODO
+        return Action();
     }
 };
 
@@ -777,9 +790,11 @@ struct Game {
 
     // 対戦する
     void Match() {
-        state.Read(cin);
-        auto action = agent.ComputeNextMove(state);
-        action.Write(state.shipyard_id_mapper_, cout);
+        while (true) {
+            state.Read(cin);
+            auto action = agent.ComputeNextMove(state);
+            action.Write(state.shipyard_id_mapper_, cout);
+        }
     }
 };
 
@@ -811,3 +826,10 @@ struct Game {
 //     }
 //     // TODO
 // }
+
+// 棋譜検証
+int main() {
+    auto game = Game();
+    game.ValidateKif(cin);
+    cout << "ok" << endl;
+}
