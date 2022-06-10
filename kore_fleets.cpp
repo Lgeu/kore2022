@@ -35,6 +35,7 @@ static auto IsClose(const double a, const double b) {
 }
 
 static auto CharToDirection(const char c) {
+    cerr << "CharToDirection: " << c << endl;
     switch (c) {
     case 'N':
         return Direction::N;
@@ -129,7 +130,7 @@ struct Fleet {
         position_ = Point{(Point::value_type)(position_raw / kSize),
                           (Point::value_type)(position_raw % kSize)};
         direction_ = (Direction)direction_raw; // TODO: 確認
-        if (strcmp(flight_plan_.c_str(), "null"))
+        if (strcmp(flight_plan_.c_str(), "null") == 0)
             flight_plan_ = "";
         return *this;
     }
@@ -145,32 +146,42 @@ struct ShipyardAction {
                    const string flight_plan = "")
         : type_(type), num_ships_(num_ships), flight_plan_(flight_plan) {
         switch (type) {
-        case ShipyardActionType::kLaunch:
+        case ShipyardActionType::kLaunch: {
             assert(num_ships > 0);
             assert(flight_plan_.size() > 0);
             assert(string("NESW").find(flight_plan[0]) != string::npos);
             for (const auto c : flight_plan)
                 assert(string("NESWC0123456789").find(c) != string::npos);
-            assert((int)flight_plan.size() <
-                   Fleet::MaxFlightPlanLenForShipCount(num_ships));
+            const auto max_flight_plan_len =
+                Fleet::MaxFlightPlanLenForShipCount(num_ships);
+            if ((int)flight_plan.size() > max_flight_plan_len) {
+                flight_plan_ = flight_plan.substr(0, max_flight_plan_len);
+            }
             break;
+        }
         case ShipyardActionType::kSpawn:
             break;
         }
     }
-    ShipyardAction(string raw) {
-        if (raw.size() == 0) {
-            assert(false);
-        } else if (raw[0] == 'S') {
-            // SPAWN
-            ShipyardAction(ShipyardActionType::kSpawn, stoi(raw.substr(6)));
-        } else {
-            // LAUNCH
-            const auto idx_underscore = raw.find('_', 8);
-            ShipyardAction(ShipyardActionType::kLaunch,
-                           stoi(raw.substr(7, idx_underscore - 7)),
-                           raw.substr(idx_underscore + 1));
-        }
+    ShipyardAction(string raw)
+        : ShipyardAction(
+              (assert(raw.size()), raw[0] == 'S') ? ShipyardActionType::kSpawn
+                                                  : ShipyardActionType::kLaunch,
+              raw[0] == 'S' ? stoi(raw.substr(6))
+                            : stoi(raw.substr(7, raw.find('_', 8) - 7)),
+              raw[0] == 'S' ? "" : raw.substr(raw.find('_', 8) + 1)) {
+        // if (raw.size() == 0) {
+        //     assert(false);
+        // } else if (raw[0] == 'S') {
+        //     // SPAWN
+        //     ShipyardAction(ShipyardActionType::kSpawn, stoi(raw.substr(6)));
+        // } else {
+        //     // LAUNCH
+        //     const auto idx_underscore = raw.find('_', 8);
+        //     ShipyardAction(ShipyardActionType::kLaunch,
+        //                    stoi(raw.substr(7, idx_underscore - 7)),
+        //                    raw.substr(idx_underscore + 1));
+        // }
     }
 
     // 文字列化
@@ -220,7 +231,7 @@ struct Shipyard {
     Shipyard& Read(istream& is) {
         // id_ と player_id_ は設定されない
         auto position_raw = 0;
-        is >> ship_count_ >> position_raw >> turns_controlled_;
+        is >> position_raw >> ship_count_ >> turns_controlled_;
         position_ = Point{(Point::value_type)(position_raw / kSize),
                           (Point::value_type)(position_raw % kSize)};
         return *this;
@@ -317,6 +328,8 @@ struct State {
     //     }
     // }
 
+    void Initialize() {}
+
     auto& Read(istream& is) {
         // 初期状態を仮定
         is >> step_;
@@ -360,14 +373,20 @@ struct State {
             for (auto x = 0; x < kSize; x++) {
                 const auto& cell = board_[{y, x}];
                 const auto& rhs_cell = rhs.board_[{y, x}];
+                cout << "y,x=" << y << "," << x << endl;
                 if (!IsClose(cell.kore_, rhs_cell.kore_))
                     return false;
                 if ((cell.fleet_id_ == -1) != (rhs_cell.fleet_id_ == -1))
                     return false;
                 if (cell.fleet_id_ != -1 &&
                     !fleets_.at(cell.fleet_id_)
-                         .Same(rhs.fleets_.at(rhs_cell.fleet_id_)))
+                         .Same(rhs.fleets_.at(rhs_cell.fleet_id_))) {
+                    cerr << "fleets not same: "
+                         << fleets_.at(cell.fleet_id_).flight_plan_ << " "
+                         << rhs.fleets_.at(rhs_cell.fleet_id_).flight_plan_
+                         << endl;
                     return false;
+                }
 
                 if ((cell.shipyard_id_ == -1) != (rhs_cell.shipyard_id_ == -1))
                     return false;
@@ -425,6 +444,9 @@ struct State {
         auto state = *this;
         // auto n_fleets = (short)0; // あーこれだめじゃん TODO
         // auto n_shipyards = (short)0;
+        if (state.step_ == 11) {
+            cerr << "step 11" << endl;
+        }
         for (PlayerId player_id = 0; player_id < 2; player_id++) {
             auto& player = state.players_[player_id];
             for (const auto& shipyard_id : player.shipyard_ids_) {
@@ -447,7 +469,7 @@ struct State {
                     if (shipyard.ship_count_ >= shipyard_action.num_ships_) {
                         const auto& flight_plan = shipyard_action.flight_plan_;
                         shipyard.ship_count_ -= shipyard_action.num_ships_;
-                        const auto& direction = CharToDirection(flight_plan[0]);
+                        const auto direction = CharToDirection(flight_plan[0]);
                         const auto max_flight_plan_len =
                             Fleet::MaxFlightPlanLenForShipCount(
                                 shipyard_action.num_ships_);
@@ -553,8 +575,8 @@ struct State {
             const auto& player = state.players_[player_id];
             auto fleets_by_loc = unordered_map<Point, vector<FleetId>>();
             for (const auto& fleet_id : player.fleet_ids_)
-                fleets_by_loc.at(state.fleets_.at(fleet_id).position_)
-                    .push_back(fleet_id);
+                fleets_by_loc[state.fleets_.at(fleet_id).position_].push_back(
+                    fleet_id);
             for (auto&& [_, value] : fleets_by_loc) {
                 // これソートいらないかと思いきや 3 つ同時とかだと必要になる
                 sort(value.begin(), value.end(),
@@ -563,7 +585,7 @@ struct State {
                              state.fleets_.at(l));
                      });
                 const auto fid = value[0];
-                for (auto i = 0; i < (int)value.size(); i++) {
+                for (auto i = 1; i < (int)value.size(); i++) {
                     const auto res_fid = combine_fleets(fid, value[i]);
                     assert(fid == res_fid);
                 }

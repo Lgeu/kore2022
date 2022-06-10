@@ -61,13 +61,13 @@ ln(num_ships_in_fleet) / 20 % の kore を拾う
 <エージェント1の残り時間:float>
 <エージェント1のkore:float>
 <エージェント1の造船所の数:int>
-<エージェント1の造船所1のID:string> <保有艦数:int> <座標:int> <支配ターン数:int>
+<エージェント1の造船所1のID:string> <座標:int> <保有艦数:int> <支配ターン数:int>
 ...
-<エージェント1の造船所1のID:string> <保有艦数:int> <座標:int> <支配ターン数:int>
+<エージェント1の造船所1のID:string> <座標:int> <保有艦数:int> <支配ターン数:int>
 <エージェント1の艦隊の数:int>
 <エージェント1の艦隊1のID:string> <座標:int> <kore:float> <艦数:float> <方向:int> <残りの命令:string>
 ...
-<エージェント1の艦隊nの座標:int> <kore:float> <艦数:float> <方向:int> <残りの命令:string>
+<エージェント1の艦隊nのID:string> <座標:int> <kore:float> <艦数:float> <方向:int> <残りの命令:string>
 <エージェント2の...>
 ```
 
