@@ -30,6 +30,10 @@ template <> struct std::hash<Point> {
 enum struct Direction { N, E, S, W };
 enum struct ShipyardActionType { kSpawn, kLaunch };
 
+auto IsClose(const double a, const double b) {
+    return abs(a - b) <= max(abs(a), abs(b)) * 1e-9;
+}
+
 static auto CharToDirection(const char c) {
     switch (c) {
     case 'N':
@@ -104,7 +108,7 @@ struct Fleet {
 
     auto Same(const Fleet& rhs) const {
         return ship_count_ == rhs.ship_count_ && direction_ == rhs.direction_ &&
-               position_ == rhs.position_ && kore_ == rhs.kore_ &&
+               position_ == rhs.position_ && IsClose(kore_, rhs.kore_) &&
                flight_plan_ == rhs.flight_plan_ && player_id_ == rhs.player_id_;
     }
 
@@ -346,7 +350,7 @@ struct State {
             for (auto x = 0; x < kSize; x++) {
                 const auto& cell = board_[{y, x}];
                 const auto& rhs_cell = rhs.board_[{y, x}];
-                if (cell.kore_ != rhs_cell.kore_)
+                if (!IsClose(cell.kore_, rhs_cell.kore_))
                     return false;
                 if ((cell.fleet_id_ == -1) != (rhs_cell.fleet_id_ == -1))
                     return false;
