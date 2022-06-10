@@ -30,7 +30,7 @@ template <> struct std::hash<Point> {
 enum struct Direction { N, E, S, W };
 enum struct ShipyardActionType { kSpawn, kLaunch };
 
-auto IsClose(const double a, const double b) {
+static auto IsClose(const double a, const double b) {
     return abs(a - b) <= max(abs(a), abs(b)) * 1e-9;
 }
 
@@ -49,18 +49,26 @@ static auto CharToDirection(const char c) {
     abort();
 }
 
-static Point GetColRow(const int pos) { return {pos / kSize, pos % kSize}; }
+static Point GetColRow(const int pos) {
+    return {(Point::value_type)(pos / kSize), (Point::value_type)(pos % kSize)};
+}
 
 static Point GetToPos(const Point v, const Direction direction) {
     switch (direction) {
     case Direction::N:
-        return v.y != 0 ? Point{v.y - 1, v.x} : Point{kSize - 1, v.x};
+        return v.y != 0 ? Point{(Point::value_type)(v.y - 1), v.x}
+                        : Point{(Point::value_type)(kSize - 1), v.x};
     case Direction::S:
-        return v.y != kSize - 1 ? Point{v.y + 1, v.x} : Point{0, v.x};
+        return v.y != kSize - 1 ? Point{(Point::value_type)(v.y + 1), v.x}
+                                : Point{0, v.x};
     case Direction::E:
-        return v.x != kSize - 1 ? Point{v.y, v.x + 1} : Point{v.x, 0};
+        return v.x != kSize - 1 ? Point{v.y, (Point::value_type)(v.x + 1)}
+                                : Point{v.x, 0};
     case Direction::W:
-        return v.x != 0 ? Point{v.y, v.x - 1} : Point{v.x, kSize - 1};
+        return v.x != 0 ? Point{v.y, (Point::value_type)(v.x - 1)}
+                        : Point{v.x, (Point::value_type)(kSize - 1)};
+    default:
+        assert(false);
     }
 }
 
@@ -118,7 +126,8 @@ struct Fleet {
         auto direction_raw = 0;
         is >> position_raw >> kore_ >> ship_count_ >> direction_raw >>
             flight_plan_;
-        position_ = Point{position_raw / kSize, position_raw % kSize};
+        position_ = Point{(Point::value_type)(position_raw / kSize),
+                          (Point::value_type)(position_raw % kSize)};
         direction_ = (Direction)direction_raw; // TODO: 確認
         if (strcmp(flight_plan_.c_str(), "null"))
             flight_plan_ = "";
@@ -212,7 +221,8 @@ struct Shipyard {
         // id_ と player_id_ は設定されない
         auto position_raw = 0;
         is >> ship_count_ >> position_raw >> turns_controlled_;
-        position_ = Point{position_raw / kSize, position_raw % 21};
+        position_ = Point{(Point::value_type)(position_raw / kSize),
+                          (Point::value_type)(position_raw % kSize)};
         return *this;
     }
 };
