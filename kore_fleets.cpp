@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <istream>
 #include <map>
+#include <ostream>
 #include <set>
 #include <string>
 
@@ -30,6 +31,13 @@ template <> struct std::hash<Point> {
 enum struct Direction { N, E, S, W };
 enum struct ShipyardActionType { kSpawn, kLaunch };
 
+const auto kTextColors =
+    array<string, 8>{"\x1B[30m", "\x1B[31m", "\x1B[32m", "\x1B[33m",
+                     "\x1B[34m", "\x1B[35m", "\x1B[36m", "\x1B[37m"};
+constexpr auto kTextBold = "\x1B[1m";
+constexpr auto kTextDim = "\x1B[2m";
+constexpr auto kResetTextStyle = "\x1B[0m";
+
 static auto IsClose(const double a, const double b) {
     return abs(a - b) <= max(abs(a), abs(b)) * 1e-9;
 }
@@ -47,7 +55,6 @@ static auto Round3(const double a) {
 }
 
 static auto CharToDirection(const char c) {
-    cerr << "CharToDirection: " << c << endl;
     switch (c) {
     case 'N':
         return Direction::N;
@@ -378,6 +385,70 @@ struct State {
         return *this;
     }
 
+    void Print() const {
+        const auto player_colors = array<int, 2>{5, 6};
+        cout << kResetTextStyle;
+        cout << "step: " << step_ << endl;
+        cout << "player / kore" << endl;
+        cout << kTextColors[player_colors[0]] << "   0   / "
+             << players_[0].kore_ << endl;
+        cout << kTextColors[player_colors[1]] << "   1   / "
+             << players_[1].kore_ << endl;
+        cout << kResetTextStyle;
+        cout << kTextBold << "^" << kResetTextStyle
+             << "fleet/ship_count/kore/light_plan" << kTextBold << " @"
+             << kResetTextStyle << "shipyard/ship_count/max_spawn" << endl;
+        for (auto y = 0; y < kSize; y++) {
+            for (auto x = 0; x < kSize; x++) {
+                cout << kResetTextStyle;
+                const auto& cell = board_[{y, x}];
+                if (cell.fleet_id_ != -1) {
+                    const auto& fleet = fleets_.at(cell.fleet_id_);
+                    cout << kTextColors[player_colors[fleet.player_id_]];
+                    cout << kTextBold << "^>v<"[(int)fleet.direction_];
+                } else if (cell.shipyard_id_ != -1) {
+                    const auto& shipyard = shipyards_.at(cell.shipyard_id_);
+                    cout << kTextColors[player_colors[shipyard.player_id_]];
+                    cout << kTextBold << "@";
+                } else {
+                    cout << kTextDim;
+                    cout << ".,-~:;!*#$"[min(
+                        9, (int)(9.0 * cell.kore_ / kMaxRegenCellKore))];
+                }
+            }
+
+            for (auto x = 0; x < kSize; x++) {
+                cout << kResetTextStyle;
+                const auto& cell = board_[{y, x}];
+                if (cell.fleet_id_ != -1) {
+                    const auto& fleet = fleets_.at(cell.fleet_id_);
+                    cout << kTextColors[player_colors[fleet.player_id_]];
+                    cout << kTextBold << " "
+                         << "^>v<"[(int)fleet.direction_];
+                    cout << kResetTextStyle;
+                    cout << kTextColors[player_colors[fleet.player_id_]];
+                    cout
+                        //<< fleet_id_mapper_.InternalToExternal(fleet.id_)
+                        << "/" << fleet.ship_count_ << "/"
+                        << (int)round(fleet.kore_) << "/" << fleet.flight_plan_;
+                } else if (cell.shipyard_id_ != -1) {
+                    const auto& shipyard = shipyards_.at(cell.shipyard_id_);
+                    cout << kTextColors[player_colors[shipyard.player_id_]];
+                    cout << kTextBold << " @";
+                    cout << kResetTextStyle;
+                    cout << kTextColors[player_colors[shipyard.player_id_]];
+                    cout
+                        //<<
+                        // shipyard_id_mapper_.InternalToExternal(shipyard.id_)
+                        << "/" << shipyard.ship_count_ << "/"
+                        << shipyard.MaxSpawn();
+                }
+            }
+            cout << endl;
+        }
+        cout << kResetTextStyle;
+    }
+
     auto Same(const State& rhs) const {
         if (step_ != rhs.step_)
             return false;
@@ -386,7 +457,7 @@ struct State {
             for (auto x = 0; x < kSize; x++) {
                 const auto& cell = board_[{y, x}];
                 const auto& rhs_cell = rhs.board_[{y, x}];
-                cout << "y,x=" << y << "," << x << endl;
+                // cout << "y,x=" << y << "," << x << endl;
                 if (!IsClose(cell.kore_, rhs_cell.kore_))
                     return false;
                 if ((cell.fleet_id_ == -1) != (rhs_cell.fleet_id_ == -1))
@@ -834,6 +905,7 @@ struct Game {
                 break;
             auto action = Action().Read(state.shipyard_id_mapper_, is);
             state = state.Next(action);
+            state.Print();
             const auto input_state = State().Read(is);
             assert(state.Same(input_state));
             state = input_state;
