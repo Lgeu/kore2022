@@ -2,6 +2,8 @@
 #include "../marathon/library.hpp"
 #include <cassert>
 #include <cstddef>
+#include <iomanip>
+#include <ios>
 #include <istream>
 #include <map>
 #include <ostream>
@@ -386,18 +388,46 @@ struct State {
     }
 
     void Print() const {
+        cout << fixed << setprecision(1);
         const auto player_colors = array<int, 2>{5, 6};
         cout << kResetTextStyle;
         cout << "step: " << step_ << endl;
-        cout << "player / kore" << endl;
-        cout << kTextColors[player_colors[0]] << "   0   / "
-             << players_[0].kore_ << endl;
-        cout << kTextColors[player_colors[1]] << "   1   / "
-             << players_[1].kore_ << endl;
+        cout << "player    / kore      / cargo     / ships     / shipyards / "
+                "max spawn / kore+cargo+ships*10+shipyards*500"
+             << endl;
+        for (PlayerId player_id = 0; player_id < 2; player_id++) {
+            const auto& player = players_[player_id];
+            const auto kore = player.kore_;
+            auto cargo = 0.0;
+            auto ships = 0;
+            auto max_spawn = 0;
+            auto n_shipyards = (int)player.shipyard_ids_.size();
+            for (const auto& [_, fleet] : fleets_) {
+                if (fleet.player_id_ == player_id) {
+                    cargo += fleet.kore_;
+                    ships += fleet.ship_count_;
+                }
+            }
+            for (const auto& [_, shipyard] : shipyards_) {
+                if (shipyard.player_id_ == player_id) {
+                    ships += shipyard.ship_count_;
+                    max_spawn += shipyard.MaxSpawn();
+                }
+            }
+            cout << kTextColors[player_colors[player_id]];
+            cout << setw(9) << player_id << " / ";
+            cout << setw(9) << kore << " / ";
+            cout << setw(9) << cargo << " / ";
+            cout << setw(9) << ships << " / ";
+            cout << setw(9) << n_shipyards << " / ";
+            cout << setw(9) << max_spawn << " / ";
+            cout << setw(9) << kore + cargo + ships * 10 + n_shipyards * 500
+                 << endl;
+        }
         cout << kResetTextStyle;
-        cout << kTextBold << "^" << kResetTextStyle
-             << "fleet/ship_count/kore/light_plan" << kTextBold << " @"
-             << kResetTextStyle << "shipyard/ship_count/max_spawn" << endl;
+        cout << kTextBold << "[^]" << kResetTextStyle
+             << "ships/kore/flight_plan" << kTextBold << " [@]"
+             << kResetTextStyle << "ships/max_spawn" << endl;
         for (auto y = 0; y < kSize; y++) {
             for (auto x = 0; x < kSize; x++) {
                 cout << kResetTextStyle;
@@ -423,30 +453,25 @@ struct State {
                 if (cell.fleet_id_ != -1) {
                     const auto& fleet = fleets_.at(cell.fleet_id_);
                     cout << kTextColors[player_colors[fleet.player_id_]];
-                    cout << kTextBold << " "
-                         << "^>v<"[(int)fleet.direction_];
+                    cout << kTextBold << " ["
+                         << "^>v<"[(int)fleet.direction_] << "]";
                     cout << kResetTextStyle;
                     cout << kTextColors[player_colors[fleet.player_id_]];
-                    cout
-                        //<< fleet_id_mapper_.InternalToExternal(fleet.id_)
-                        << "/" << fleet.ship_count_ << "/"
-                        << (int)round(fleet.kore_) << "/" << fleet.flight_plan_;
+                    cout << fleet.ship_count_ << "/" << fleet.kore_ << "/"
+                         << (fleet.flight_plan_.size() ? fleet.flight_plan_
+                                                       : "_");
                 } else if (cell.shipyard_id_ != -1) {
                     const auto& shipyard = shipyards_.at(cell.shipyard_id_);
                     cout << kTextColors[player_colors[shipyard.player_id_]];
-                    cout << kTextBold << " @";
+                    cout << kTextBold << " [@]";
                     cout << kResetTextStyle;
                     cout << kTextColors[player_colors[shipyard.player_id_]];
-                    cout
-                        //<<
-                        // shipyard_id_mapper_.InternalToExternal(shipyard.id_)
-                        << "/" << shipyard.ship_count_ << "/"
-                        << shipyard.MaxSpawn();
+                    cout << shipyard.ship_count_ << "/" << shipyard.MaxSpawn();
                 }
             }
             cout << endl;
         }
-        cout << kResetTextStyle;
+        cout << kResetTextStyle << defaultfloat;
     }
 
     auto Same(const State& rhs) const {
@@ -504,8 +529,6 @@ struct State {
         players_[fleet.player_id_].fleet_ids_.erase(fleet.id_);
         if (board_[fleet.position_].fleet_id_ == fleet.id_) {
             board_[fleet.position_].fleet_id_ = -1;
-        } else {
-            cerr << "DeleteFleet: そんなことある？" << endl;
         }
         fleets_.erase(fleet.id_);
     }
@@ -526,9 +549,6 @@ struct State {
 
     State Next(const Action& action) const {
         auto state = *this;
-        if (state.step_ == 11) {
-            cerr << "step 11" << endl;
-        }
         for (PlayerId player_id = 0; player_id < 2; player_id++) {
             auto& player = state.players_[player_id];
             for (const auto& shipyard_id : player.shipyard_ids_) {
@@ -587,7 +607,6 @@ struct State {
         };
 
         // 元の実装だとプレイヤーごと
-        // for (auto&& [_, fleet] : state.fleets_) {
         for (auto it = state.fleets_.begin(); it != state.fleets_.end();) {
             // 0 を無視
             auto& fleet = it->second;
@@ -905,7 +924,8 @@ struct Game {
                 break;
             auto action = Action().Read(state.shipyard_id_mapper_, is);
             state = state.Next(action);
-            state.Print();
+            if (state.step_ % 10 == 1)
+                state.Print();
             const auto input_state = State().Read(is);
             assert(state.Same(input_state));
             state = input_state;
