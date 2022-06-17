@@ -72,3 +72,11 @@ ln(num_ships_in_fleet) / 20 % の kore を拾う
 ```
 
 step 0 には行動は無く、最終 step には行動がある。
+
+## boost のビルドとコンパイル
+
+```
+./bootstrap.sh --with-toolset=clang
+./b2 install -j4 --with-python -d0 cxxflags=-fPIC cflags=-fPIC
+clang++ -std=c++17 -Wall -Wextra -O2 --shared -fPIC kore_extension.cpp -o kore_extension.so -I/home/user/anaconda3/include/python3.8 /usr/local/lib/libboost_numpy38.a /usr/local/lib/libboost_python38.a -lpython3.8 -L/home/user/anaconda3/lib
+```

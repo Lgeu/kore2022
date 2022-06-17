@@ -6,3 +6,4 @@
 -Wno-unused-function
 -march=native
 -pthread
+-I/home/user/anaconda3/include/python3.8

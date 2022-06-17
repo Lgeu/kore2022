@@ -339,6 +339,39 @@ struct State {
     FleetId next_fleet_id_;
     ShipyardId next_shipyard_id_;
 
+    auto CountShips() const {
+        auto counts = array<short, 2>();
+        for (const auto& [_, shipyard] : shipyards_)
+            counts[shipyard.player_id_] += shipyard.ship_count_;
+        for (const auto& [_, fleet] : fleets_)
+            counts[fleet.player_id_] += fleet.ship_count_;
+        return counts;
+    }
+
+    auto CountCargo() const {
+        auto counts = array<double, 2>();
+        for (const auto& [_, fleet] : fleets_)
+            counts[fleet.player_id_] += fleet.kore_;
+        return counts;
+    }
+
+    auto ComputeApproxScore() const {
+        auto result = array<double, 2>();
+        result[0] += players_[0].kore_;
+        result[1] += players_[1].kore_;
+        const auto cargo_counts = CountCargo();
+        result[0] += cargo_counts[0];
+        result[1] += cargo_counts[1];
+        const auto ship_counts = CountShips();
+        result[0] += kSpawnCost * ship_counts[0];
+        result[1] += kSpawnCost * ship_counts[1];
+        result[0] +=
+            kConvertCost * kSpawnCost * players_[0].shipyard_ids_.size();
+        result[1] +=
+            kConvertCost * kSpawnCost * players_[1].shipyard_ids_.size();
+        return result;
+    }
+
     // State(const Observation& observation) {
     //     // TODO
     //     for (auto y = 0; y < kSize; y++) {
@@ -912,6 +945,8 @@ struct SpawnAgent {
         auto kore = state.players_[player_id].kore_;
         auto action = Action();
         for (const auto& [shipyard_id, shipyard] : state.shipyards_) {
+            if (shipyard.player_id_ != player_id)
+                continue;
             if (kore < 10.0)
                 break;
             const auto max_spawn = shipyard.MaxSpawn();
@@ -1183,8 +1218,17 @@ struct Feature {
 // }
 
 // 棋譜検証
+#ifdef TEST_KORE_FLEETS
 int main() {
     auto game = Game();
     game.ValidateKif(cin);
     cout << "ok" << endl;
 }
+#endif
+
+// TODO: 特徴のスケーリング
+// TODO: 特徴の検証？
+// TODO: NN 実装
+// TODO: 候補手列挙実装
+// TODO: ビームサーチ
+// TODO: MCTS
