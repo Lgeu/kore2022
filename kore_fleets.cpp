@@ -219,19 +219,28 @@ struct ShipyardAction {
 
 struct Shipyard {
     ShipyardId id_;
-    int ship_count_;
+    short ship_count_;
     Point position_;
     PlayerId player_id_;
-    int turns_controlled_;
+    short turns_controlled_;
+
+    // 以下は Read では無視する
+
+    // 帰還/生産でそのターンに増えた艦数。新しくできたり乗っ取ったりした時は全部
+    short last_ship_increment_;
+    // 出撃/外部からの攻撃で減った艦数
+    short last_ship_decrement_;
 
     Shipyard(const ShipyardId id, const int ship_count, const Point position,
              const PlayerId player_id, const int turns_controlled)
         : id_(id), ship_count_(ship_count), position_(position),
-          player_id_(player_id), turns_controlled_(turns_controlled) {}
+          player_id_(player_id), turns_controlled_(turns_controlled),
+          last_ship_increment_(ship_count), last_ship_decrement_(0) {}
 
     Shipyard(const ShipyardId id, const PlayerId player_id, istream& is)
-        : id_(id), player_id_(player_id) {
+        : id_(id), player_id_(player_id), last_ship_decrement_(0) {
         Read(is);
+        last_ship_increment_ = ship_count_;
     }
 
     int MaxSpawn() const {
@@ -314,6 +323,8 @@ struct Action {
             os << external_shipyard_id << " " << action.Str() << endl;
         }
     }
+
+    void Merge(Action& rhs) { actions.merge(rhs.actions); }
 };
 
 struct State {
@@ -425,6 +436,7 @@ struct State {
                  << endl;
         }
         cout << kResetTextStyle;
+        cout << "                      ";
         cout << kTextBold << "[^]" << kResetTextStyle
              << "ships/kore/flight_plan" << kTextBold << " [@]"
              << kResetTextStyle << "ships/max_spawn" << endl;
@@ -549,6 +561,13 @@ struct State {
 
     State Next(const Action& action) const {
         auto state = *this;
+
+        // shipyard の情報をリセット
+        for (auto& [_, shipyard] : state.shipyards_) {
+            shipyard.last_ship_increment_ = 0;
+            shipyard.last_ship_decrement_ = 0;
+        }
+
         for (PlayerId player_id = 0; player_id < 2; player_id++) {
             auto& player = state.players_[player_id];
             for (const auto& shipyard_id : player.shipyard_ids_) {
@@ -566,6 +585,8 @@ struct State {
                         shipyard_action.num_ships_ <= shipyard.MaxSpawn()) {
                         player.kore_ -= kSpawnCost * shipyard_action.num_ships_;
                         shipyard.ship_count_ += shipyard_action.num_ships_;
+                        shipyard.last_ship_increment_ +=
+                            shipyard_action.num_ships_;
                     } else {
                         cerr << "Next: その Spawn は無理" << endl;
                     }
@@ -574,6 +595,8 @@ struct State {
                     if (shipyard.ship_count_ >= shipyard_action.num_ships_) {
                         const auto& flight_plan = shipyard_action.flight_plan_;
                         shipyard.ship_count_ -= shipyard_action.num_ships_;
+                        shipyard.last_ship_decrement_ +=
+                            shipyard_action.num_ships_;
                         const auto direction = CharToDirection(flight_plan[0]);
                         const auto max_flight_plan_len =
                             Fleet::MaxFlightPlanLenForShipCount(
@@ -769,6 +792,7 @@ struct State {
                     state.DeleteFleet(fleet);
                 } else {
                     shipyard.ship_count_ -= fleet.ship_count_;
+                    shipyard.last_ship_decrement_ += fleet.ship_count_;
                     state.players_[shipyard.player_id_].kore_ += fleet.kore_;
                     state.DeleteFleet(fleet);
                 }
@@ -783,6 +807,7 @@ struct State {
                 assert(fleet.player_id_ == shipyard.player_id_);
                 state.players_[shipyard.player_id_].kore_ += fleet.kore_;
                 shipyard.ship_count_ += fleet.ship_count_;
+                shipyard.last_ship_increment_ += fleet.ship_count_;
                 state.DeleteFleet(fleet);
             }
         }
@@ -882,8 +907,27 @@ struct KifHeader {
     }
 };
 
+struct SpawnAgent {
+    Action ComputeNextMove(const State& state, const PlayerId player_id) const {
+        auto kore = state.players_[player_id].kore_;
+        auto action = Action();
+        for (const auto& [shipyard_id, shipyard] : state.shipyards_) {
+            if (kore < 10.0)
+                break;
+            const auto max_spawn = shipyard.MaxSpawn();
+            const auto n_spawn = min(max_spawn, (int)(kore / kSpawnCost));
+            kore -= n_spawn * kSpawnCost;
+            const auto [it, inserted] = action.actions.insert(
+                make_pair(shipyard_id,
+                          ShipyardAction(ShipyardActionType::kSpawn, n_spawn)));
+            assert(inserted);
+        }
+        return action;
+    }
+};
+
 struct Agent {
-    Action ComputeNextMove(const State& state) const {
+    Action ComputeNextMove(const State& state, const PlayerId player_id) const {
         // TODO
         return Action();
     }
@@ -936,9 +980,176 @@ struct Game {
     void Match() {
         while (true) {
             state.Read(cin);
-            auto action = agent.ComputeNextMove(state);
+            auto action = agent.ComputeNextMove(state, 0);
             action.Write(state.shipyard_id_mapper_, cout);
         }
+    }
+};
+
+#include "../marathon/nn.cpp"
+struct Feature {
+    static constexpr auto kFutureSteps = 21;
+    static constexpr auto kNLocalFeatures = 11 * kFutureSteps;
+    static constexpr auto kNGlobalFeatures = 8 * kFutureSteps + 1;
+    nn::TensorBuffer<float, kNLocalFeatures, kSize, kSize> local_features;
+    nn::TensorBuffer<float, kNGlobalFeatures> global_features;
+    Feature(State state, const PlayerId player_id)
+        : local_features(), global_features() {
+        auto idx_local_features = 0;
+        auto idx_global_features = 0;
+
+        static auto reachable =
+            nn::TensorBuffer<short, kFutureSteps, 2, kSize * 2, kSize * 2>();
+        static auto reachable_all = nn::TensorBuffer<short, kFutureSteps, 2>();
+        reachable.Fill_(0);
+        reachable_all.Fill_(0);
+
+        // 21 ステップ先まで見る
+        for (auto i = 0; i < kFutureSteps; i++) {
+            auto n_ships = array<short, 2>();
+            auto sum_cargo = array<float, 2>();
+
+            // local
+
+            // board kore  // TODO: スケーリング
+            for (auto y = 0; y < kSize; y++) {
+                for (auto x = 0; x < kSize; x++) {
+                    local_features[idx_local_features][y][x] =
+                        state.board_[{y, x}].kore_ * (1.0 / kMaxRegenCellKore);
+                }
+            }
+            idx_local_features++;
+
+            // shipyard (自分, 相手) x (ships, max_spawn)
+            // TODO: スケーリング
+            for (const auto& [_, shipyard] : state.shipyards_) {
+                const auto [y, x] = shipyard.position_;
+                const auto away = shipyard.player_id_ != player_id;
+                local_features[idx_local_features + away * 2][y][x] =
+                    shipyard.ship_count_;
+                local_features[idx_local_features + away * 2 + 1][y][x] =
+                    shipyard.MaxSpawn();
+                n_ships[away] += shipyard.ship_count_;
+            }
+            idx_local_features += 4;
+
+            // fleet (自分, 相手)
+            //        x (ships, cargo, flight_plan_length, 被撃墜可能性)
+            // TODO: スケーリング
+            for (const auto& [_, fleet] : state.fleets_) {
+                const auto [y, x] = fleet.position_;
+                const auto away = fleet.player_id_ != player_id;
+                local_features[idx_local_features + away * 3][y][x] =
+                    fleet.ship_count_;
+                local_features[idx_local_features + away * 3 + 1][y][x] =
+                    fleet.flight_plan_.size();
+
+                // TODO: 被撃墜可能性
+                // いや、実装面倒だしいいか・・・
+                // for (const auto& [_, shipyard] : state.shipyards_) {
+                //     const auto shipyard_away = shipyard.player_id_ !=
+                //     player_id;
+                // }
+
+                n_ships[away] += fleet.ship_count_;
+                sum_cargo[away] += fleet.kore_;
+            }
+            idx_local_features += 4;
+
+            // 到達可能艦数 (自分、相手)
+            // 経路にたまたまいるのは除く
+            for (const auto& [_, shipyard] : state.shipyards_) {
+                const auto [sy, sx] = shipyard.position_;
+                const auto delta = i == 0
+                                       ? shipyard.ship_count_
+                                       : (short)(shipyard.last_ship_increment_ -
+                                                 shipyard.last_ship_decrement_);
+                const auto away = shipyard.player_id_ != player_id;
+                for (auto n = 0; i + n < kFutureSteps; n++) {
+                    if (n < kSize / 2) {
+                        const auto cx = sx - n - 1 >= 0 ? sx : sx + kSize;
+                        const auto cy = sy - n >= 0 ? sy + 1 : sy + 1 + kSize;
+                        reachable[i + n][away][cy - n - 1][cx] += delta;
+                        reachable[i + n][away][cy - n][cx] += delta;
+                        reachable[i + n][away][cy][cx - n - 1] -= delta;
+                        reachable[i + n][away][cy][cx - n] -= delta;
+                        reachable[i + n][away][cy][cx + n + 1] -= delta;
+                        reachable[i + n][away][cy][cx + n] -= delta;
+                        reachable[i + n][away][cy + n][cx] += delta;
+                        reachable[i + n][away][cy + n + 1][cx] += delta;
+                    } else if (n < kSize - 1) {
+                        reachable_all[i + n][away] += delta;
+                        const auto cx = sx + kSize / 2;
+                        auto cy = sy + kSize / 2 + 1;
+                        if (sy == kSize - 1)
+                            cy -= kSize;
+                        const auto r = kSize - 1 - n;
+                        reachable[i + n][away][cy - r][cx] -= delta;
+                        reachable[i + n][away][cy - r][cx + 1] -= delta;
+                        reachable[i + n][away][cy][cx - r] += delta;
+                        reachable[i + n][away][cy][cx + r + 1] += delta;
+                        reachable[i + n][away][cy + 1][cx - r] += delta;
+                        reachable[i + n][away][cy + 1][cx + r + 1] += delta;
+                        reachable[i + n][away][cy + r + 1][cx] -= delta;
+                        reachable[i + n][away][cy + r + 1][cx + 1] -= delta;
+                    } else {
+                        reachable_all[i + n][away] += delta;
+                    }
+                }
+            }
+
+            for (auto p = 0; p < 2; p++) {
+                // 累積 (左下へ)
+                for (auto y = 0; y < kSize * 2 - 1; y++)
+                    for (auto x = 1; x < kSize * 2; x++)
+                        reachable[i][p][y + 1][x - 1] += reachable[i][p][y][x];
+                // reachable_all を reachable にマージ
+                for (auto x = kSize; x < kSize * 2; x++)
+                    reachable[i][p][kSize][x] += reachable_all[i][p];
+                for (auto y = kSize + 1; y < kSize * 2; y++)
+                    reachable[i][p][y][kSize] += reachable_all[i][p];
+                // 累積 (右下へ)
+                for (auto y = 0; y < kSize * 2 - 1; y++)
+                    for (auto x = 0; x < kSize * 2 - 1; x++)
+                        reachable[i][p][y + 1][x + 1] += reachable[i][p][y][x];
+                // 4 つに分かれてるのを 1 箇所に集める
+                for (auto y = 0; y < kSize; y++)
+                    for (auto x = 0; x < kSize; x++)
+                        local_features[idx_local_features][y][x] =
+                            reachable[i][p][y][x] +
+                            reachable[i][p][y][x + kSize] +
+                            reachable[i][p][y + kSize][x] +
+                            reachable[i][p][y + kSize]
+                                     [x + kSize]; // TODO: スケーリング
+                idx_local_features++;
+            }
+
+            // global
+            global_features[idx_global_features++] =
+                state.players_[player_id].kore_;
+            global_features[idx_global_features++] =
+                state.players_[1 - player_id].kore_;
+            global_features[idx_global_features++] = sum_cargo[0];
+            global_features[idx_global_features++] = sum_cargo[1];
+            global_features[idx_global_features++] = n_ships[0];
+            global_features[idx_global_features++] = n_ships[1];
+            global_features[idx_global_features++] =
+                state.players_[player_id].shipyard_ids_.size();
+            global_features[idx_global_features++] =
+                state.players_[1 - player_id].shipyard_ids_.size();
+
+            // 次のターンへ
+            auto action = SpawnAgent().ComputeNextMove(state, 0);
+            auto action1 = SpawnAgent().ComputeNextMove(state, 1);
+            action.Merge(action1);
+            assert(action1.actions.size() == 0);
+            state = state.Next(action);
+        }
+
+        global_features[idx_global_features++] = state.step_;
+
+        assert(kNLocalFeatures == idx_local_features);
+        assert(kNGlobalFeatures == idx_global_features);
     }
 };
 
