@@ -63,7 +63,7 @@ auto MakeFeature(const string& filename) {
             max(approx_scores[0], approx_scores[1]) <
                 3.0 * min(approx_scores[0], approx_scores[1])) {
             for (PlayerId player_id = 0; player_id < 2; player_id++) {
-                const auto feature = Feature(state, 0);
+                const auto feature = Feature(state, player_id);
                 local_features[n_data] = feature.local_features;
                 global_features[n_data] = feature.global_features;
                 n_data++;
