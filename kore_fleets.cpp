@@ -1048,17 +1048,16 @@ struct Feature {
 
             // local
 
-            // board kore  // TODO: スケーリング
+            // board kore
             for (auto y = 0; y < kSize; y++) {
                 for (auto x = 0; x < kSize; x++) {
                     local_features[idx_local_features][y][x] =
-                        state.board_[{y, x}].kore_ * (1.0 / kMaxRegenCellKore);
+                        state.board_[{y, x}].kore_;
                 }
             }
             idx_local_features++;
 
             // shipyard (自分, 相手) x (ships, max_spawn)
-            // TODO: スケーリング
             for (const auto& [_, shipyard] : state.shipyards_) {
                 const auto [y, x] = shipyard.position_;
                 const auto away = shipyard.player_id_ != player_id;
@@ -1072,7 +1071,6 @@ struct Feature {
 
             // fleet (自分, 相手)
             //        x (ships, cargo, flight_plan_length, 被撃墜可能性)
-            // TODO: スケーリング
             for (const auto& [_, fleet] : state.fleets_) {
                 const auto [y, x] = fleet.position_;
                 const auto away = fleet.player_id_ != player_id;
@@ -1158,8 +1156,7 @@ struct Feature {
                             reachable[i][p][y][x] +
                             reachable[i][p][y][x + kSize] +
                             reachable[i][p][y + kSize][x] +
-                            reachable[i][p][y + kSize]
-                                     [x + kSize]; // TODO: スケーリング
+                            reachable[i][p][y + kSize][x + kSize];
                 idx_local_features++;
             }
 
