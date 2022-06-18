@@ -1,0 +1,3 @@
+[submodule "marathon"]
+	path = marathon
+	url = git@github.com:Lgeu/marathon.git

@@ -1033,6 +1033,8 @@ struct Feature {
         auto idx_local_features = 0;
         auto idx_global_features = 0;
 
+        const auto step = state.step_;
+
         static auto reachable =
             nn::TensorBuffer<short, kFutureSteps, 2, kSize * 2, kSize * 2>();
         static auto reachable_all = nn::TensorBuffer<short, kFutureSteps, 2>();
@@ -1181,7 +1183,7 @@ struct Feature {
             state = state.Next(action);
         }
 
-        global_features[idx_global_features++] = state.step_;
+        global_features[idx_global_features++] = step;
 
         assert(kNLocalFeatures == idx_local_features);
         assert(kNGlobalFeatures == idx_global_features);
