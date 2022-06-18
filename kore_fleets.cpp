@@ -1024,7 +1024,7 @@ struct Game {
 #include "../marathon/nn.cpp"
 struct Feature {
     static constexpr auto kFutureSteps = 21;
-    static constexpr auto kNLocalFeatures = 11 * kFutureSteps;
+    static constexpr auto kNLocalFeatures = 13 * kFutureSteps;
     static constexpr auto kNGlobalFeatures = 8 * kFutureSteps + 1;
     nn::TensorBuffer<float, kNLocalFeatures, kSize, kSize> local_features;
     nn::TensorBuffer<float, kNGlobalFeatures> global_features;
@@ -1079,6 +1079,8 @@ struct Feature {
                 local_features[idx_local_features + away * 3][y][x] =
                     fleet.ship_count_;
                 local_features[idx_local_features + away * 3 + 1][y][x] =
+                    fleet.kore_;
+                local_features[idx_local_features + away * 3 + 2][y][x] =
                     fleet.flight_plan_.size();
 
                 // TODO: 被撃墜可能性
@@ -1091,7 +1093,7 @@ struct Feature {
                 n_ships[away] += fleet.ship_count_;
                 sum_cargo[away] += fleet.kore_;
             }
-            idx_local_features += 4;
+            idx_local_features += 6;
 
             // 到達可能艦数 (自分、相手)
             // 経路にたまたまいるのは除く
