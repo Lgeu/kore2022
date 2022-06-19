@@ -49,11 +49,16 @@ static auto IsClose(const double a, const double b) {
 // Python の round は正確にやるために一旦文字列に起こしてるっぽい
 // https://github.com/python/cpython/blob/3.7/Objects/floatobject.c
 static auto Round3(const double a) {
-    const auto y = (long double)a * 1e3;
-    auto z = round(y);
-    if (abs(y - z) == 0.5)
-        z = 2.0 * round(y / 2.0);
-    return (double)(z / 1e3);
+    assert(a >= 0.0);
+    if ((unsigned)(a * 1e5 + 0.5) % 100 != 50) {
+        return round(a * 1e3) / 1e3;
+    } else {
+        const auto y = (long double)a * 1e3;
+        auto z = round(y);
+        if (abs(y - z) == 0.5)
+            z = 2.0 * round(y / 2.0);
+        return (double)(z * 1e-3l);
+    }
 }
 
 static auto CharToDirection(const char c) {
