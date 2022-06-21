@@ -1027,6 +1027,203 @@ struct Game {
 };
 
 #include "../marathon/nn.cpp"
+
+constexpr auto Relative(const Point p) {
+    constexpr auto kHalf = kSize / 2;
+    return Point(p.y > kHalf    ? p.y - kSize
+                 : p.y < -kHalf ? p.y + kSize
+                                : p.y,
+                 p.x > kHalf    ? p.x - kSize
+                 : p.x < -kHalf ? p.x + kSize
+                                : p.x);
+}
+
+constexpr auto RelativeAll(const Point p) {
+    const auto y = p.y >= 0 ? p.y : p.y + kSize;
+    const auto x = p.x >= 0 ? p.x : p.x + kSize;
+    return y * kSize + x;
+}
+
+struct NNUEFeature {
+    static constexpr auto kNGlobalFeatures = 9;
+    static constexpr int PointTimeIndexOffset(const int n) {
+        return (n * n * n * 2 + n * n * 6 + n * 4) / 3;
+    }
+
+    static constexpr auto kFutureSteps = 10;
+    // static constexpr auto kNPointTimeIndices =
+    // PointTimeIndexOffset(kFutureSteps + 1);
+    static constexpr auto NPointTimeIndices() {
+        return PointTimeIndexOffset(kFutureSteps + 1);
+    }
+
+    static constexpr auto kFleetResolution = 10;
+
+    static array<Point, 2000> to_point_;
+
+    static inline auto PointToIndex(const Point relative_point) {
+        const auto [y, x] = relative_point;
+        const auto d = relative_point.l1_norm();
+        const auto offset = 2 * d * (d - 1);
+        if (x >= 0) {
+            if (y < 0)
+                return offset + x;
+            else
+                return offset + d + y;
+        } else {
+            if (y >= 0)
+                return offset + d * 2 - x;
+            else
+                return offset + d * 3 - y;
+        }
+    }
+
+    static inline auto PointTimeToIndex(const Point relative_point,
+                                        const int n) {
+        assert(0 <= n && n <= kFutureSteps);
+        const auto offset = PointTimeIndexOffset(n);
+        const auto point_index = PointToIndex(relative_point);
+        const auto result = offset + point_index;
+        assert(offset <= point_index &&
+               point_index < PointTimeIndexOffset(n + 1));
+        return result;
+    }
+
+    auto EncodeNShips(const int n_ships) {
+        const auto result = n_ships; // TODO
+        assert(0 <= result && result < kFleetResolution);
+        return result;
+    }
+
+    static constexpr auto NFleetFeatures() {
+        return 2 * NPointTimeIndices() * kFleetResolution;
+    }
+
+    static constexpr auto kFieldKoreResolution = 5;
+    auto EncodeFieldKore(const double kore, const int step) {
+        auto result = 0; // TODO
+        assert(-1 <= result && result < kFieldKoreResolution);
+        return result;
+    }
+
+    // [player][shipyard][idx_features]
+    array<unordered_map<int, vector<int>>, 2> shipyard_features;
+    array<array<float, kNGlobalFeatures>, 2> global_features;
+
+    NNUEFeature(const State& state) {
+        // 共通した global feature と、shipyard ごとの feature を作る
+        // 2 人分
+
+        auto state_i = state;
+        const auto step = state.step_;
+
+        // fleet
+        for (auto i = 0; i <= kFutureSteps; i++) {
+            for (const auto& [_, center_shipyard] : state.shipyards_) {
+
+                for (const auto& [_, fleet] : state_i.fleets_) {
+                    const auto relative_point =
+                        Relative(fleet.position_ - center_shipyard.position_);
+                    if (relative_point.l1_norm() > i + 1)
+                        continue;
+                    const auto away =
+                        fleet.player_id_ != center_shipyard.player_id_;
+
+                    const auto feature =
+                        (PointTimeToIndex(relative_point, i) * 2 + away) *
+                            kFleetResolution +
+                        EncodeNShips(fleet.ship_count_);
+                    shipyard_features[center_shipyard.player_id_]
+                                     [center_shipyard.id_]
+                                         .push_back(feature);
+                }
+            }
+
+            // 次のターンへ
+            auto action = SpawnAgent().ComputeNextMove(state_i, 0);
+            auto action1 = SpawnAgent().ComputeNextMove(state_i, 1);
+            action.Merge(action1);
+            assert(action1.actions.size() == 0);
+            state_i = state_i.Next(action);
+        }
+
+        // shipyard
+        // shipyard は全箇所必要
+        auto offset = NFleetFeatures();
+        for (const auto& [_, center_shipyard] : state.shipyards_) {
+            for (const auto& [_, shipyard] : state_i.shipyards_) {
+                const auto relative_point_index =
+                    RelativeAll(shipyard.position_ - center_shipyard.position_);
+
+                const auto away =
+                    shipyard.player_id_ != center_shipyard.player_id_;
+
+                const auto feature =
+                    offset +
+                    (relative_point_index * 2 + away) * kFleetResolution +
+                    EncodeNShips(shipyard.ship_count_);
+
+                shipyard_features[center_shipyard.player_id_]
+                                 [center_shipyard.id_]
+                                     .push_back(feature);
+            }
+        }
+
+        offset += kSize * kSize * 2 * kFleetResolution;
+
+        // kore
+        for (auto y = 0; y < kSize; y++) {
+            for (auto x = 0; x < kSize; x++) {
+                const auto p = Point(y, x);
+                if (state.board_[{y, x}].shipyard_id_ >= 0)
+                    continue;
+                const auto kore = state.board_[{y, x}].kore_;
+                const auto encoded = EncodeFieldKore(kore, state.step_);
+                if (encoded == -1)
+                    continue;
+                for (const auto& [_, center_shipyard] : state.shipyards_) {
+                    const auto relative_point =
+                        Relative(p - center_shipyard.position_);
+                    if (relative_point.l1_norm() > kFutureSteps)
+                        continue;
+                    const auto relative_point_index =
+                        PointToIndex(relative_point);
+                    const auto feature =
+                        relative_point_index * kFieldKoreResolution + encoded;
+                    shipyard_features[center_shipyard.player_id_]
+                                     [center_shipyard.id_]
+                                         .push_back(feature);
+                }
+            }
+        }
+
+        offset += 2 * kFutureSteps * (kFutureSteps + 1) * kFieldKoreResolution;
+
+        // global features
+        const auto sum_cargo = state.CountCargo();
+        const auto n_ships = state.CountShips();
+        for (PlayerId player_id = 0; player_id < 2; player_id++) {
+            auto idx_global_features = 0;
+            auto& g = global_features[player_id];
+            g[idx_global_features++] = state.step_;
+            g[idx_global_features++] = state.players_[player_id].kore_;
+            g[idx_global_features++] = state.players_[1 - player_id].kore_;
+            g[idx_global_features++] = sum_cargo[player_id];
+            g[idx_global_features++] = sum_cargo[1 - player_id];
+            g[idx_global_features++] = n_ships[player_id];
+            g[idx_global_features++] = n_ships[1 - player_id];
+            g[idx_global_features++] =
+                state.players_[player_id].shipyard_ids_.size();
+            g[idx_global_features++] =
+                state.players_[1 - player_id].shipyard_ids_.size();
+
+            assert(idx_global_features == kNGlobalFeatures);
+        }
+
+        // TODO: targets
+    }
+};
+
 struct Feature {
     static constexpr auto kFutureSteps = 21;
     static constexpr auto kNLocalFeatures = 13 * kFutureSteps;
@@ -1232,9 +1429,10 @@ int main() {
 }
 #endif
 
-// TODO: 特徴のスケーリング
-// TODO: 特徴の検証？
+// TODO: 手の目的がなんであったか
+// TODO: 特徴の検証
 // TODO: NN 実装
+// TODO: DP で一番稼げる手を探す
 // TODO: 候補手列挙実装
-// TODO: ビームサーチ
 // TODO: MCTS
+// TODO: ビームサーチ
