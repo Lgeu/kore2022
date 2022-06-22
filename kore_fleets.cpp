@@ -10,6 +10,12 @@
 #include <set>
 #include <string>
 
+#ifdef NDEBUG
+static constexpr auto kDebug = false;
+#else
+static constexpr auto kDebug = true;
+#endif
+
 static constexpr auto kSize = 21;
 static constexpr auto kSpawnCost = 10.0;
 static constexpr auto kConvertCost = 50;
@@ -332,11 +338,25 @@ struct Action {
     void Merge(Action& rhs) { actions.merge(rhs.actions); }
 };
 
+enum struct FleetReportType : signed char {
+    kArrived,
+    kCollided,
+    kMerged,
+    kConverted,
+};
+
+struct FleetReport {
+    FleetReportType type_;
+    Point position_;
+    bool deleted;
+};
+
 struct State {
     int step_;
     array<Player, 2> players_;
     map<FleetId, Fleet> fleets_;
     map<ShipyardId, Shipyard> shipyards_;
+    map<FleetId, FleetReport> fleet_reports_;
     Board<Cell, kSize, kSize> board_;
 
     IdMapper<ShipyardId> shipyard_id_mapper_;
@@ -575,10 +595,14 @@ struct State {
         assert(inserted);
     }
 
-    void DeleteFleet(const Fleet& fleet) {
+    void DeleteFleet(const Fleet& fleet, const FleetReportType cause) {
         players_[fleet.player_id_].fleet_ids_.erase(fleet.id_);
         if (board_[fleet.position_].fleet_id_ == fleet.id_) {
             board_[fleet.position_].fleet_id_ = -1;
+        }
+        if constexpr (kDebug) {
+            fleet_reports_.insert(make_pair(
+                fleet.id_, FleetReport{cause, fleet.position_, true}));
         }
         fleets_.erase(fleet.id_);
     }
@@ -605,6 +629,9 @@ struct State {
             shipyard.last_ship_increment_ = 0;
             shipyard.last_ship_decrement_ = 0;
         }
+
+        // reports の情報をリセット
+        state.fleet_reports_.clear();
 
         for (PlayerId player_id = 0; player_id < 2; player_id++) {
             auto& player = state.players_[player_id];
@@ -685,7 +712,7 @@ struct State {
                     state.next_shipyard_id_++, fleet.ship_count_ - kConvertCost,
                     fleet.position_, fleet.player_id_, 0});
                 it++; // 削除する前にイテレータを進める
-                state.DeleteFleet(fleet);
+                state.DeleteFleet(fleet, FleetReportType::kConverted);
                 continue;
             }
             // C を無視
@@ -725,12 +752,12 @@ struct State {
                 assert(false);
                 f2.kore_ += f1.kore_;
                 f2.ship_count_ += f1.ship_count_;
-                state.DeleteFleet(f1);
+                state.DeleteFleet(f1, FleetReportType::kMerged);
                 return fid2;
             } else {
                 f1.kore_ += f2.kore_;
                 f1.ship_count_ += f2.ship_count_;
-                state.DeleteFleet(f2);
+                state.DeleteFleet(f2, FleetReportType::kMerged);
                 return fid1;
             }
         };
@@ -753,6 +780,12 @@ struct State {
                 for (auto i = 1; i < (int)value.size(); i++) {
                     const auto res_fid = combine_fleets(fid, value[i]);
                     assert(fid == res_fid);
+                    if constexpr (kDebug)
+                        state.fleet_reports_.insert(make_pair(
+                            fid,
+                            FleetReport{FleetReportType::kMerged,
+                                        state.fleets_.at(res_fid).position_,
+                                        false}));
                 }
             }
         }
@@ -794,10 +827,14 @@ struct State {
                         ? (short)0
                         : state.fleets_.at(deleted[0]).ship_count_;
                 state.fleets_.at(winner).ship_count_ -= max_enemy_size;
+                if constexpr (kDebug)
+                    state.fleet_reports_.insert(make_pair(
+                        winner, FleetReport{FleetReportType::kCollided,
+                                            position, false}));
             }
             for (const auto& fleet_id : deleted) {
                 const auto fleet = state.fleets_.at(fleet_id);
-                state.DeleteFleet(fleet);
+                state.DeleteFleet(fleet, FleetReportType::kCollided);
                 if (winner != -1) {
                     state.fleets_.at(winner).kore_ += fleet.kore_;
                 } else if (shipyard_id != -1 &&
@@ -827,12 +864,12 @@ struct State {
                     state.AddShipyard({state.next_shipyard_id_++, count,
                                        fleet.position_, fleet.player_id_, 1});
                     state.players_[fleet.player_id_].kore_ += fleet.kore_;
-                    state.DeleteFleet(fleet);
+                    state.DeleteFleet(fleet, FleetReportType::kCollided);
                 } else {
                     shipyard.ship_count_ -= fleet.ship_count_;
                     shipyard.last_ship_decrement_ += fleet.ship_count_;
                     state.players_[shipyard.player_id_].kore_ += fleet.kore_;
-                    state.DeleteFleet(fleet);
+                    state.DeleteFleet(fleet, FleetReportType::kCollided);
                 }
             }
         }
@@ -846,7 +883,7 @@ struct State {
                 state.players_[shipyard.player_id_].kore_ += fleet.kore_;
                 shipyard.ship_count_ += fleet.ship_count_;
                 shipyard.last_ship_increment_ += fleet.ship_count_;
-                state.DeleteFleet(fleet);
+                state.DeleteFleet(fleet, FleetReportType::kArrived);
             }
         }
 
@@ -882,9 +919,13 @@ struct State {
                 for (const auto& [f_id, dmg] : fleet_dmg_dict)
                     to_distribute[f_id][fleet.position_] =
                         to_split * (double)dmg / (double)damage;
-                state.DeleteFleet(fleet);
+                state.DeleteFleet(fleet, FleetReportType::kCollided);
             } else {
                 fleet.ship_count_ -= damage;
+                if constexpr (kDebug)
+                    state.fleet_reports_.insert(make_pair(
+                        fleet.id_, FleetReport{FleetReportType::kCollided,
+                                               fleet.position_, false}));
             }
         }
 
@@ -918,9 +959,7 @@ struct State {
         for (auto&& cell : state.board_.data) {
             if (cell.fleet_id_ == -1 && cell.shipyard_id_ == -1) {
                 if (cell.kore_ < kMaxRegenCellKore) {
-                    cell.kore_ =
-                        // round(cell.kore_ * (1.0 + kRegenRate) * 1e3) * 1e-3;
-                        Round3(cell.kore_ * (1.0 + kRegenRate));
+                    cell.kore_ = Round3(cell.kore_ * (1.0 + kRegenRate));
                 }
             }
         }
@@ -967,7 +1006,8 @@ struct SpawnAgent {
 };
 
 struct Agent {
-    Action ComputeNextMove(const State& state, const PlayerId player_id) const {
+    Action ComputeNextMove(const State& /*state*/,
+                           const PlayerId /*player_id*/) const {
         // TODO
         return Action();
     }
@@ -1100,7 +1140,7 @@ struct NNUEFeature {
     }
 
     static constexpr auto kFieldKoreResolution = 5;
-    auto EncodeFieldKore(const double kore, const int step) {
+    auto EncodeFieldKore(const double /*kore*/, const int /*step*/) {
         auto result = 0; // TODO
         assert(-1 <= result && result < kFieldKoreResolution);
         return result;
@@ -1221,6 +1261,108 @@ struct NNUEFeature {
         }
 
         // TODO: targets
+    }
+};
+
+enum struct ActionTargetType : short {
+    kNull,
+    kSpawn,
+    kMove,
+    kAttack,
+    kConvert
+};
+
+struct ActionTarget {
+
+    ActionTargetType action_target_type;
+
+  private:
+    short n_ships_;
+    Point position_;
+    short n_steps_;
+    Direction direction_;
+
+  public:
+    // spawn => 艦数
+    // move => 移動先の場所、かけるターン数、艦数
+    // attack => 攻撃先の場所、艦数、初手
+    // convert => 建設場所、艦数、初手
+
+    // move は機体の回収を含むとする
+
+    // attack と convert が最短距離でなかった場合、無視する
+
+    ActionTarget(const State& state, const ShipyardId shipyard_id,
+                 const ShipyardAction shipyard_action) {
+        n_ships_ = shipyard_action.num_ships_;
+        const auto& center_shipyard = state.shipyards_.at(shipyard_id);
+        if (shipyard_action.type_ == ShipyardActionType::kSpawn) {
+            action_target_type = ActionTargetType::kSpawn;
+        } else {
+            auto direction_char = shipyard_action.flight_plan_[0];
+            if (direction_char == 'C') {
+                action_target_type = ActionTargetType::kNull;
+                goto ok;
+            }
+            direction_ = CharToDirection(direction_char);
+            auto action = Action();
+            action.actions.insert(make_pair(shipyard_id, shipyard_action));
+            auto state_i = state.Next(action);
+            const auto fleet_id = FleetId(state_i.next_fleet_id_ - 1);
+            for (auto i = 0; i < 21; i++) {
+                auto it = state_i.fleet_reports_.find(fleet_id);
+                if (it != state_i.fleet_reports_.end()) {
+                    const auto& report = it->second;
+                    position_ = report.position_;
+                    n_steps_ = state_i.step_ - state.step_;
+                    switch (report.type_) {
+                    case FleetReportType::kArrived:
+                    case FleetReportType::kMerged:
+                        action_target_type = ActionTargetType::kMove;
+                        goto ok;
+                    case FleetReportType::kCollided:
+                        if (Relative(position_ - center_shipyard.position_)
+                                .l1_norm() != n_steps_)
+                            break;
+                        action_target_type = ActionTargetType::kAttack;
+                        goto ok;
+                    case FleetReportType::kConverted:
+                        if (Relative(position_ - center_shipyard.position_)
+                                .l1_norm() != n_steps_)
+                            break;
+                        action_target_type = ActionTargetType::kConvert;
+                        goto ok;
+                    }
+                    if (report.deleted) {
+                        action_target_type = ActionTargetType::kNull;
+                        goto ok;
+                    }
+                }
+                state_i = state_i.Next({});
+            }
+            action_target_type = ActionTargetType::kNull;
+        }
+    ok:;
+    }
+
+    const auto& NShips() const {
+        assert(action_target_type != ActionTargetType::kNull);
+        return n_ships_;
+    }
+    const auto& Position() const {
+        assert(action_target_type != ActionTargetType::kNull &&
+               action_target_type != ActionTargetType::kSpawn);
+        return position_;
+    }
+    const auto& NSteps() const {
+        // attack と convert もまあ一応大丈夫ではあるが…
+        assert(action_target_type == ActionTargetType::kMove);
+        return n_steps_;
+    }
+    const auto& Direction() const {
+        assert(action_target_type == ActionTargetType::kAttack ||
+               action_target_type == ActionTargetType::kConvert);
+        return direction_;
     }
 };
 
@@ -1429,7 +1571,6 @@ int main() {
 }
 #endif
 
-// TODO: 手の目的がなんであったか
 // TODO: 特徴の検証
 // TODO: NN 実装
 // TODO: DP で一番稼げる手を探す
