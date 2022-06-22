@@ -161,7 +161,7 @@ struct Fleet {
             flight_plan_;
         position_ = Point{(Point::value_type)(position_raw / kSize),
                           (Point::value_type)(position_raw % kSize)};
-        direction_ = (Direction)direction_raw; // TODO: 確認
+        direction_ = (Direction)direction_raw;
         if (strcmp(flight_plan_.c_str(), "null") == 0)
             flight_plan_ = "";
         return *this;
@@ -396,28 +396,6 @@ struct State {
             kConvertCost * kSpawnCost * players_[1].shipyard_ids_.size();
         return result;
     }
-
-    // State(const Observation& observation) {
-    //     // TODO
-    //     for (auto y = 0; y < kSize; y++) {
-    //         for (auto x = 0; x < kSize; x++) {
-    //             const auto kore = observation.kore[position.to_index(size)];
-    //             // board_[{y, x}] = Cell(kore, -1, -1);
-    //         }
-    //     }
-    //     for (PlayerId player_id = 0; player_id < 2; player_id++) {
-    //         const auto& player_observation = observation.players[player_id];
-    //         // players_[player_id] = {player_id,
-    //         player_observation.player_kore}; for (const auto& fleet :
-    //         player_observation.player_fleets) {
-    //             AddFleet(fleet);
-    //         }
-    //         for (const auto& shipyard : player_observation.player_shipyards)
-    //         {
-    //             AddShipyard(shipyard);
-    //         }
-    //     }
-    // }
 
     void Initialize() {}
 
@@ -1259,8 +1237,6 @@ struct NNUEFeature {
 
             assert(idx_global_features == kNGlobalFeatures);
         }
-
-        // TODO: targets
     }
 };
 
@@ -1425,8 +1401,7 @@ struct Feature {
                 local_features[idx_local_features + away * 3 + 2][y][x] =
                     fleet.flight_plan_.size();
 
-                // TODO: 被撃墜可能性
-                // いや、実装面倒だしいいか・・・
+                // 被撃墜可能性、実装面倒だしいいか・・・
                 // for (const auto& [_, shipyard] : state.shipyards_) {
                 //     const auto shipyard_away = shipyard.player_id_ !=
                 //     player_id;
@@ -1534,33 +1509,6 @@ struct Feature {
 };
 
 // =========================================
-
-// auto PopulateBoard() {
-//     auto seed = 3253151351u;
-
-//     constexpr auto half = (kSize + 1) / 2;
-//     auto grid = Board<double, kSize, kSize>();
-//     grid.Fill(0.0);
-//     static auto rng = Random(seed);
-//     for (auto i = 0; i < half; i++) {
-//         grid[{rng.randint(0, half), rng.randint(0, half)}] = i * i;
-//         grid[{rng.randint(half / 2, half), rng.randint(half / 2, half)}] =
-//             i * i;
-//     }
-//     auto radius_grid = grid;
-//     for (auto r = 0; r < half; r++) {
-//         for (auto c = 0; c < half; c++) {
-//             const auto value = grid[{r, c}];
-//             if (value == 0)
-//                 continue;
-//             const auto radius = min((int)round(sqrt(value / half)), 1);
-//             if (radius < 1)
-//                 continue;
-//             radius_grid[{r, c}] = grid[{r, c}];
-//         }
-//     }
-//     // TODO
-// }
 
 // 棋譜検証
 #ifdef TEST_KORE_FLEETS
