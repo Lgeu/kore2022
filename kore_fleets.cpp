@@ -1088,8 +1088,6 @@ static constexpr int PointTimeIndexOffset(const int n) {
 struct NNUEFeature {
     static constexpr auto kNGlobalFeatures = 9;
 
-    static constexpr auto a = PointTimeIndexOffset(10);
-
     static constexpr auto kFutureSteps = 10;
     static constexpr auto kNPointTimeIndices =
         PointTimeIndexOffset(kFutureSteps + 1);
@@ -1335,7 +1333,7 @@ struct NNUEFeature {
 array<string, NNUEFeature::kNFeatureTypes> NNUEFeature::feature_names;
 
 enum struct ActionTargetType : short {
-    kNull,
+    kNull = -1,
     kSpawn,
     kMove,
     kAttack,
@@ -1348,7 +1346,7 @@ struct ActionTarget {
 
   private:
     short n_ships_;
-    Point position_;
+    Point relative_position_;
     short n_steps_;
     Direction direction_;
 
@@ -1366,6 +1364,10 @@ struct ActionTarget {
                  const ShipyardAction shipyard_action) {
         n_ships_ = shipyard_action.num_ships_;
         const auto& center_shipyard = state.shipyards_.at(shipyard_id);
+        if (n_ships_ >= 256) {
+            action_target_type = ActionTargetType::kNull;
+            goto ok;
+        }
         if (shipyard_action.type_ == ShipyardActionType::kSpawn) {
             action_target_type = ActionTargetType::kSpawn;
         } else {
@@ -1383,22 +1385,22 @@ struct ActionTarget {
                 auto it = state_i.fleet_reports_.find(fleet_id);
                 if (it != state_i.fleet_reports_.end()) {
                     const auto& report = it->second;
-                    position_ = report.position_;
+                    relative_position_ =
+                        Relative(report.position_ - center_shipyard.position_);
                     n_steps_ = state_i.step_ - state.step_;
+                    assert(n_steps_ == i);
                     switch (report.type_) {
                     case FleetReportType::kArrived:
                     case FleetReportType::kMerged:
                         action_target_type = ActionTargetType::kMove;
                         goto ok;
                     case FleetReportType::kCollided:
-                        if (Relative(position_ - center_shipyard.position_)
-                                .l1_norm() != n_steps_)
+                        if (relative_position_.l1_norm() != n_steps_)
                             break;
                         action_target_type = ActionTargetType::kAttack;
                         goto ok;
                     case FleetReportType::kConverted:
-                        if (Relative(position_ - center_shipyard.position_)
-                                .l1_norm() != n_steps_)
+                        if (relative_position_.l1_norm() != n_steps_)
                             break;
                         action_target_type = ActionTargetType::kConvert;
                         goto ok;
@@ -1416,13 +1418,14 @@ struct ActionTarget {
     }
 
     const auto& NShips() const {
+        // TODO: これいい感じに量子化したほうが良い気がしてきた
         assert(action_target_type != ActionTargetType::kNull);
         return n_ships_;
     }
-    const auto& Position() const {
+    const auto& RelativePosition() const {
         assert(action_target_type != ActionTargetType::kNull &&
                action_target_type != ActionTargetType::kSpawn);
-        return position_;
+        return relative_position_;
     }
     const auto& NSteps() const {
         // attack と convert もまあ一応大丈夫ではあるが…

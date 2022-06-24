@@ -11,6 +11,172 @@
 namespace p = boost::python;
 namespace np = boost::python::numpy;
 
+template <typename T, typename... S> auto NpEmpty(const S... shape) {
+    return np::empty(p::make_tuple(shape...), np::dtype::get_builtin<T>());
+}
+
+auto MakeNNUEFeature(const string& filename) {
+    // TODO: フォーマットを考える
+    constexpr auto kMaxNShipyardFeatures = 512;
+    // shipyard_feature: int[many, kMaxNShipyardFeatures]
+    // global_feature: float[many, kNGlobalFeatures]
+
+    // target_values: bool[many]
+    // target_action_types: signed char[many]
+    // target_action_n_ships: short[many]
+    // target_action_relative_position: short[many]
+    // target_action_n_steps: signed char[many]
+    // target_action_direction: signed char[many]
+
+    // PyTorch との相性も良さそう
+
+    // Action は null かもしれないことに留意
+
+    auto is = ifstream(filename);
+    if (!is) {
+        throw runtime_error(string("ファイル ") + filename +
+                            string("を開けなかったよ"));
+    }
+    KifHeader().Read(is);
+
+    // 罫線を読み捨てる
+    string line;
+    is >> line; // "==="
+
+    // 0 ターン目の行動を読み捨てる
+    int zero0, zero1;
+    is >> zero0 >> zero1;
+
+    struct NNUEData {
+        vector<int> shipyard_feature_;
+        array<float, NNUEFeature::kNGlobalFeatures> global_feature_;
+        ActionTarget target_;
+        PlayerId player_id_;
+    };
+
+    auto data = vector<NNUEData>();
+
+    while (true) {
+        // 状態を読み取る
+        const auto state = State().Read(is);
+
+        is >> line; // "---"
+        if (line[0] == '=')
+            break;
+
+        // 行動を読み取る
+        const auto action = Action().Read(state.shipyard_id_mapper_, is);
+
+        // 接戦なら特徴抽出
+        const auto approx_scores = state.ComputeApproxScore();
+        if (state.step_ < 100 ||
+            max(approx_scores[0], approx_scores[1]) <
+                3.0 * min(approx_scores[0], approx_scores[1])) {
+
+            const auto features = NNUEFeature(state);
+            for (const auto& [shipyard_id, shipyard_action] : action.actions) {
+                const auto action_target =
+                    ActionTarget(state, shipyard_id, shipyard_action);
+                if (action_target.action_target_type == ActionTargetType::kNull)
+                    continue;
+                const auto shipyard = state.shipyards_.at(shipyard_id);
+
+                data.push_back(
+                    {features.shipyard_features[shipyard.player_id_].at(
+                         shipyard_id),
+                     features.global_features[shipyard.player_id_],
+                     action_target, shipyard.player_id_});
+            }
+        }
+    }
+
+    // 結果の読み取り
+    is >> line; // "-1"
+    double reward0, reward1;
+    is >> reward0 >> reward1;
+    const auto winner = (PlayerId)(reward1 > reward0);
+
+    // numpy のデータつくる
+    const auto n_data = (int)data.size();
+    const auto np_shipyard_features =
+        NpEmpty<int>(n_data, kMaxNShipyardFeatures);
+    auto np_global_features =
+        NpEmpty<float>(n_data, NNUEFeature::kNGlobalFeatures);
+    auto np_target_values = NpEmpty<bool>(n_data);
+    auto np_target_action_types = NpEmpty<signed char>(n_data);
+    auto np_target_action_n_ships = NpEmpty<short>(n_data);
+    auto np_target_action_relative_position = NpEmpty<short>(n_data);
+    auto np_target_action_n_steps = NpEmpty<signed char>(n_data);
+    auto np_target_action_direction = NpEmpty<signed char>(n_data);
+
+    for (auto idx_data = 0; idx_data < n_data; idx_data++) {
+        const auto& d = data[idx_data];
+        for (auto i = 0; i < kMaxNShipyardFeatures; i++) {
+            ((int*)np_shipyard_features
+                 .get_data())[idx_data * kMaxNShipyardFeatures + i] =
+                i < (int)d.shipyard_feature_.size() ? d.shipyard_feature_[i]
+                                                    : -100;
+        }
+        for (auto i = 0; i < NNUEFeature::kNGlobalFeatures; i++) {
+            ((float*)np_shipyard_features
+                 .get_data())[idx_data * NNUEFeature::kNGlobalFeatures + i] =
+                d.global_feature_[i];
+        }
+        const auto& a = d.target_;
+        ((bool*)np_target_values.get_data())[idx_data] = d.player_id_ == winner;
+        ((signed char*)np_target_action_types.get_data())[idx_data] =
+            (signed char)a.action_target_type;
+        ((short*)np_target_action_n_ships.get_data())[idx_data] =
+            (signed char)a.NShips();
+        ((signed char*)
+             np_target_action_relative_position.get_data())[idx_data] =
+            a.action_target_type == ActionTargetType::kSpawn
+                ? -100
+                : RelativeAll(a.RelativePosition());
+
+        ((signed char*)np_target_action_n_steps.get_data())[idx_data] =
+            a.action_target_type == ActionTargetType::kMove ? a.NSteps() : -100;
+
+        ((signed char*)np_target_action_direction.get_data())[idx_data] =
+            a.action_target_type == ActionTargetType::kAttack ||
+                    a.action_target_type == ActionTargetType::kConvert
+                ? (int)a.Direction()
+                : -100;
+    }
+
+    // 行動なしをかんがえてなかった
+
+    // const auto shipyard_features = nn::TensorSlice<typename T, int dims>
+
+    // auto np_shipyard_features =
+    //     np::empty(p::make_tuple(n_data, kMaxNShipyardFeatures),
+    //     np::dtype::get_builtin<int>());
+    // auto np_global_features =
+    //     np::empty(p::make_tuple(n_data, NNUEFeature::kNGlobalFeatures),
+    //               np::dtype::get_builtin<float>());
+    // auto np_target_values =
+    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<bool>());
+    // auto np_action_types =
+    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<signed
+    //     char>());
+    // auto np_target_action_n_ships =
+    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<short>());
+    // auto np_target_action_relative_position =
+    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<short>());
+    // auto np_target_action_n_steps =
+    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<signed
+    //     char>());
+    // auto np_target_action_direction =
+    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<signed
+    //     char>());
+
+    return p::make_tuple(np_shipyard_features, np_global_features,
+                         np_target_values, np_target_action_types,
+                         np_target_action_n_ships,
+                         np_target_action_relative_position,
+                         np_target_action_n_steps, np_target_action_direction);
+}
+
 // ファイル名を受け取って、特徴と勝敗を返す
 auto MakeFeature(const string& filename, np::ndarray& out_local_features,
                  np::ndarray& out_global_features, np::ndarray& out_targets) {
