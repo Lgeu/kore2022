@@ -1062,22 +1062,21 @@ constexpr auto RelativeAll(const Point p) {
     return y * kSize + x;
 }
 
+static constexpr int PointTimeIndexOffset(const int n) {
+    return (n * n * n * 2 + n * n * 6 + n * 4) / 3;
+}
+
 struct NNUEFeature {
     static constexpr auto kNGlobalFeatures = 9;
-    static constexpr int PointTimeIndexOffset(const int n) {
-        return (n * n * n * 2 + n * n * 6 + n * 4) / 3;
-    }
+
+    static constexpr auto a = PointTimeIndexOffset(10);
 
     static constexpr auto kFutureSteps = 10;
-    // static constexpr auto kNPointTimeIndices =
-    // PointTimeIndexOffset(kFutureSteps + 1);
-    static constexpr auto NPointTimeIndices() {
-        return PointTimeIndexOffset(kFutureSteps + 1);
-    }
+    static constexpr auto kNPointTimeIndices =
+        PointTimeIndexOffset(kFutureSteps + 1);
 
     static constexpr auto kFleetResolution = 10;
-
-    static array<Point, 2000> to_point_;
+    static constexpr auto kFieldKoreResolution = 5;
 
     static inline auto PointToIndex(const Point relative_point) {
         const auto [y, x] = relative_point;
@@ -1102,8 +1101,7 @@ struct NNUEFeature {
         const auto offset = PointTimeIndexOffset(n);
         const auto point_index = PointToIndex(relative_point);
         const auto result = offset + point_index;
-        assert(offset <= point_index &&
-               point_index < PointTimeIndexOffset(n + 1));
+        assert(offset <= result && result < PointTimeIndexOffset(n + 1));
         return result;
     }
 
@@ -1113,11 +1111,83 @@ struct NNUEFeature {
         return result;
     }
 
-    static constexpr auto NFleetFeatures() {
-        return 2 * NPointTimeIndices() * kFleetResolution;
+    static constexpr auto kNFleetFeatureTypes =
+        2 * kNPointTimeIndices * kFleetResolution;
+
+    static constexpr auto kNShipyardFeatureTypes =
+        kSize * kSize * 2 * kFleetResolution;
+
+    static constexpr auto kNKoreFeatureTypes =
+        2 * kFutureSteps * (kFutureSteps + 1) * kFieldKoreResolution;
+
+    static constexpr auto kNFeatureTypes =
+        kNFleetFeatureTypes + kNShipyardFeatureTypes + kNKoreFeatureTypes;
+
+    static array<string, kNFeatureTypes> feature_names;
+
+    static void SetFeatureNames() {
+        // fleet
+        for (auto t = 0; t <= kFutureSteps; t++) {
+            for (auto y = -10; y <= 10; y++)
+                for (auto x = -10; x <= 10; x++) {
+                    const auto p = Point(y, x);
+                    if (p.l1_norm() > t + 1 || (y == 0 && x == 0))
+                        continue;
+                    const auto relative_point_index = PointTimeToIndex(p, t);
+                    for (auto away = 0; away < 2; away++)
+                        for (auto n = 0; n < kFleetResolution; n++) {
+                            const auto feature =
+                                (relative_point_index * 2 + away) *
+                                    kFleetResolution +
+                                n;
+                            feature_names[feature] =
+                                string("fleet_step") + to_string(t) +
+                                string("_y") + to_string(y) + string("_x") +
+                                to_string(x) +
+                                string(away ? "_away" : "_home") +
+                                string("_ships") + to_string(n);
+                        }
+                }
+        }
+
+        // shipyard
+        auto offset = kNFleetFeatureTypes;
+        for (auto y = -10; y <= 10; y++)
+            for (auto x = -10; x <= 10; x++) {
+                const auto p = Point(y, x);
+                const auto relative_point_index = RelativeAll(p);
+                for (auto away = 0; away < 2; away++)
+                    for (auto n = 0; n < kFleetResolution; n++) {
+                        const auto feature = offset +
+                                             (relative_point_index * 2 + away) *
+                                                 kFleetResolution +
+                                             n;
+                        feature_names[feature] =
+                            string("shipyard_y") + to_string(y) + string("_x") +
+                            to_string(x) + string(away ? "_away" : "_home") +
+                            string("_ships") + to_string(n);
+                    }
+            }
+
+        // kore
+        offset += kNShipyardFeatureTypes;
+        for (auto y = -10; y <= 10; y++)
+            for (auto x = -10; x <= 10; x++) {
+                const auto p = Point(y, x);
+                const auto relative_point_index = PointToIndex(p);
+                if (p.l1_norm() > kFutureSteps || (p.y == 0 && p.x == 0))
+                    continue;
+                for (auto n = 0; n < kFieldKoreResolution; n++) {
+                    const auto feature =
+                        offset + relative_point_index * kFieldKoreResolution +
+                        n;
+                    feature_names[feature] = string("kore_y") + to_string(y) +
+                                             string("_x") + to_string(x) +
+                                             string("_amount") + to_string(n);
+                }
+            }
     }
 
-    static constexpr auto kFieldKoreResolution = 5;
     auto EncodeFieldKore(const double /*kore*/, const int /*step*/) {
         auto result = 0; // TODO
         assert(-1 <= result && result < kFieldKoreResolution);
@@ -1133,7 +1203,6 @@ struct NNUEFeature {
         // 2 人分
 
         auto state_i = state;
-        const auto step = state.step_;
 
         // fleet
         for (auto i = 0; i <= kFutureSteps; i++) {
@@ -1167,7 +1236,7 @@ struct NNUEFeature {
 
         // shipyard
         // shipyard は全箇所必要
-        auto offset = NFleetFeatures();
+        auto offset = kNFleetFeatureTypes;
         for (const auto& [_, center_shipyard] : state.shipyards_) {
             for (const auto& [_, shipyard] : state_i.shipyards_) {
                 const auto relative_point_index =
@@ -1187,7 +1256,7 @@ struct NNUEFeature {
             }
         }
 
-        offset += kSize * kSize * 2 * kFleetResolution;
+        offset += kNShipyardFeatureTypes;
 
         // kore
         for (auto y = 0; y < kSize; y++) {
@@ -1215,7 +1284,7 @@ struct NNUEFeature {
             }
         }
 
-        offset += 2 * kFutureSteps * (kFutureSteps + 1) * kFieldKoreResolution;
+        offset += kNKoreFeatureTypes;
 
         // global features
         const auto sum_cargo = state.CountCargo();
@@ -1239,6 +1308,7 @@ struct NNUEFeature {
         }
     }
 };
+array<string, NNUEFeature::kNFeatureTypes> NNUEFeature::feature_names;
 
 enum struct ActionTargetType : short {
     kNull,
@@ -1519,9 +1589,20 @@ int main() {
 }
 #endif
 
+// 特徴一覧の出力
+#ifdef TEST_PRINT_NNUE_FEATURE_NAMES
+int main() {
+    NNUEFeature::SetFeatureNames();
+    for (const auto& name : NNUEFeature::feature_names) {
+        cout << name << endl;
+    }
+}
+// clang-format off
+// clang++ kore_fleets.cpp -std=c++17 -Wall -Wextra -O3 -DTEST_PRINT_NNUE_FEATURE_NAMES
+// clang-format on
+#endif
+
 // TODO: 特徴の検証
 // TODO: NN 実装
 // TODO: DP で一番稼げる手を探す
-// TODO: 候補手列挙実装
 // TODO: MCTS
-// TODO: ビームサーチ
