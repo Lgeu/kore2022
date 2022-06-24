@@ -32,6 +32,25 @@ using FleetId = short;
 using ShipyardId = short;
 using PlayerId = short;
 
+struct Kore90Percentiles {
+    array<double, 400> data;
+    Kore90Percentiles() {
+        for (auto step = 0; step < 400; step++) {
+            auto result = 0.0;
+            auto step_pow = 1.0;
+            for (const auto coef :
+                 {44.263940407419646, 0.8352519775398193, -0.032542548363244446,
+                  0.0005796380595064503, -3.0853302781649527e-06,
+                  6.548497742662611e-09, -4.905086438656963e-12}) {
+                result += step_pow * coef;
+                step_pow *= step;
+            }
+            data[step] = result;
+        }
+    }
+    const double& operator[](const int i) { return data[i]; }
+} kore_90_percentiles;
+
 template <> struct std::hash<Point> {
     size_t operator()(const Point& key) const { return key.y * 256 + key.x; }
 };
@@ -1105,8 +1124,10 @@ struct NNUEFeature {
         return result;
     }
 
-    auto EncodeNShips(const int n_ships) {
-        const auto result = n_ships; // TODO
+    auto QuantizeNShips(const int n_ships) {
+        const auto result =
+            clamp((int)(2 * log(n_ships)) - 2, 0, kFleetResolution - 1);
+
         assert(0 <= result && result < kFleetResolution);
         return result;
     }
@@ -1188,8 +1209,11 @@ struct NNUEFeature {
             }
     }
 
-    auto EncodeFieldKore(const double /*kore*/, const int /*step*/) {
-        auto result = 0; // TODO
+    auto QuantizeFieldKore(const double kore, const int step) {
+        const auto result = clamp((int)(kore / kore_90_percentiles[step] *
+                                        kFieldKoreResolution),
+                                  0, kFieldKoreResolution) -
+                            1;
         assert(-1 <= result && result < kFieldKoreResolution);
         return result;
     }
@@ -1219,7 +1243,7 @@ struct NNUEFeature {
                     const auto feature =
                         (PointTimeToIndex(relative_point, i) * 2 + away) *
                             kFleetResolution +
-                        EncodeNShips(fleet.ship_count_);
+                        QuantizeNShips(fleet.ship_count_);
                     shipyard_features[center_shipyard.player_id_]
                                      [center_shipyard.id_]
                                          .push_back(feature);
@@ -1248,7 +1272,7 @@ struct NNUEFeature {
                 const auto feature =
                     offset +
                     (relative_point_index * 2 + away) * kFleetResolution +
-                    EncodeNShips(shipyard.ship_count_);
+                    QuantizeNShips(shipyard.ship_count_);
 
                 shipyard_features[center_shipyard.player_id_]
                                  [center_shipyard.id_]
@@ -1265,7 +1289,7 @@ struct NNUEFeature {
                 if (state.board_[{y, x}].shipyard_id_ >= 0)
                     continue;
                 const auto kore = state.board_[{y, x}].kore_;
-                const auto encoded = EncodeFieldKore(kore, state.step_);
+                const auto encoded = QuantizeFieldKore(kore, state.step_);
                 if (encoded == -1)
                     continue;
                 for (const auto& [_, center_shipyard] : state.shipyards_) {
