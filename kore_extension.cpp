@@ -137,7 +137,7 @@ auto MakeNNUEFeature(const string& filename) {
         ((signed char*)np_target_action_direction.get_data())[idx_data] =
             a.action_target_type == ActionTargetType::kAttack ||
                     a.action_target_type == ActionTargetType::kConvert
-                ? (int)a.Direction()
+                ? (int)a.InitialMove()
                 : -100;
     }
 

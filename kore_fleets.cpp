@@ -1349,7 +1349,7 @@ struct ActionTarget {
     short n_ships_;
     Point relative_position_;
     short n_steps_;
-    Direction direction_;
+    Direction initial_move_;
 
   public:
     // spawn => 艦数
@@ -1372,12 +1372,12 @@ struct ActionTarget {
         if (shipyard_action.type_ == ShipyardActionType::kSpawn) {
             action_target_type = ActionTargetType::kSpawn;
         } else {
-            auto direction_char = shipyard_action.flight_plan_[0];
-            if (direction_char == 'C') {
+            auto initial_move_char = shipyard_action.flight_plan_[0];
+            if (initial_move_char == 'C') {
                 action_target_type = ActionTargetType::kNull;
                 goto ok;
             }
-            direction_ = CharToDirection(direction_char);
+            initial_move_ = CharToDirection(initial_move_char);
             auto action = Action();
             action.actions.insert(make_pair(shipyard_id, shipyard_action));
             auto state_i = state.Next(action);
@@ -1433,10 +1433,10 @@ struct ActionTarget {
         assert(action_target_type == ActionTargetType::kMove);
         return n_steps_; // [1, 21]
     }
-    const auto& Direction() const {
+    const auto& InitialMove() const {
         assert(action_target_type == ActionTargetType::kAttack ||
                action_target_type == ActionTargetType::kConvert);
-        return direction_;
+        return initial_move_;
     }
 };
 
