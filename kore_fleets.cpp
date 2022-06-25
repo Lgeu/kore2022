@@ -1123,6 +1123,8 @@ struct NNUEFeature {
     }
 
     auto QuantizeNShips(const int n_ships) {
+        if (n_ships == 0)
+            return 0;
         const auto result =
             clamp((int)(2 * log(n_ships)) - 2, 0, kFleetResolution - 1);
 
