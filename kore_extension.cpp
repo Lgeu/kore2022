@@ -125,8 +125,7 @@ auto MakeNNUEFeature(const string& filename) {
             (signed char)a.action_target_type;
         ((short*)np_target_action_n_ships.get_data())[idx_data] =
             (signed char)a.NShips();
-        ((signed char*)
-             np_target_action_relative_position.get_data())[idx_data] =
+        ((short*)np_target_action_relative_position.get_data())[idx_data] =
             a.action_target_type == ActionTargetType::kSpawn
                 ? -100
                 : RelativeAll(a.RelativePosition());

@@ -825,9 +825,10 @@ struct State {
                         : state.fleets_.at(deleted[0]).ship_count_;
                 state.fleets_.at(winner).ship_count_ -= max_enemy_size;
                 if constexpr (kDebug)
-                    state.fleet_reports_.insert(make_pair(
-                        winner, FleetReport{FleetReportType::kCollided,
-                                            position, false}));
+                    if (max_enemy_size)
+                        state.fleet_reports_.insert(make_pair(
+                            winner, FleetReport{FleetReportType::kCollided,
+                                                position, false}));
             }
             for (const auto& fleet_id : deleted) {
                 const auto fleet = state.fleets_.at(fleet_id);
@@ -920,9 +921,10 @@ struct State {
             } else {
                 fleet.ship_count_ -= damage;
                 if constexpr (kDebug)
-                    state.fleet_reports_.insert(make_pair(
-                        fleet.id_, FleetReport{FleetReportType::kCollided,
-                                               fleet.position_, false}));
+                    if (damage)
+                        state.fleet_reports_.insert(make_pair(
+                            fleet.id_, FleetReport{FleetReportType::kCollided,
+                                                   fleet.position_, false}));
             }
         }
 
@@ -1385,7 +1387,7 @@ struct ActionTarget {
             auto state_i = state.Next(action);
             const auto fleet_id = FleetId(state_i.next_fleet_id_ - 1);
             for (auto i = 0; i < 21; i++) {
-                auto it = state_i.fleet_reports_.find(fleet_id);
+                const auto it = state_i.fleet_reports_.find(fleet_id);
                 if (it != state_i.fleet_reports_.end()) {
                     const auto& report = it->second;
                     relative_position_ =
