@@ -1262,7 +1262,7 @@ struct NNUEFeature {
         // shipyard は全箇所必要
         auto offset = kNFleetFeatureTypes;
         for (const auto& [_, center_shipyard] : state.shipyards_) {
-            for (const auto& [_, shipyard] : state_i.shipyards_) {
+            for (const auto& [_, shipyard] : state.shipyards_) {
                 const auto relative_point_index =
                     RelativeAll(shipyard.position_ - center_shipyard.position_);
 
