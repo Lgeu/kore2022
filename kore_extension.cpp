@@ -1,6 +1,3 @@
-// 最終的にやることは、state から特徴量の numpy array への変換
-
-// from https://qiita.com/termoshtt/items/81eeb0467d9087958f7f
 #include <boost/python/numpy.hpp>
 
 #include <fstream>
@@ -275,6 +272,7 @@ auto MakeFeature(const string& filename, np::ndarray& out_local_features,
     return n_data;
 }
 
+// from https://qiita.com/termoshtt/items/81eeb0467d9087958f7f
 /*
 // 2倍にする
 void mult_two(np::ndarray a) {
@@ -299,6 +297,7 @@ BOOST_PYTHON_MODULE(kore_extension) {
     Py_Initialize();
     np::initialize();
     p::def("make_feature", MakeFeature);
+    p::def("make_nnue_feature", MakeNNUEFeature);
 }
 
 #ifdef TEST_KORE_EXTENSION
@@ -323,5 +322,42 @@ int main() {
 }
 // clang-format off
 // clang++ -std=c++17 -Wall -Wextra -O3 -DTEST_KORE_EXTENSION -fPIC kore_extension.cpp -I/home/user/anaconda3/include/python3.8 /usr/local/lib/libboost_numpy38.a /usr/local/lib/libboost_python38.a -lpython3.8 -L/home/user/anaconda3/lib -g
+// clang-format on
+#endif
+
+#ifdef TEST_MAKE_NNUE_FEATURE
+int main() {
+    Py_Initialize();
+    np::initialize();
+
+    // {
+    //     const auto arr = NpEmpty<float>(10);
+    //     ((float*)arr.get_data())[0] = 1.0f;
+    //     const auto t = make_tuple(arr);
+    //     const auto extracted = (np::ndarray)p::extract<np::ndarray>(t[0]);
+    //     cout << ((float*)extracted.get_data())[0] << endl;
+    // }
+
+    const auto t = MakeNNUEFeature("36385265.kif");
+    const auto np_shipyard_features =
+        (np::ndarray)p::extract<np::ndarray>(t[0]);
+
+    const auto n_data = (int)np_shipyard_features.shape(0);
+    cout << "n_data=" << n_data << endl;
+    const auto max_n_shipyard_features = (int)np_shipyard_features.shape(1);
+    for (auto i = 0; i < n_data; i++) {
+        for (auto f = 0; f < max_n_shipyard_features; f++) {
+            const auto feature =
+                ((int*)np_shipyard_features
+                     .get_data())[i * max_n_shipyard_features + f];
+            if (feature == -100)
+                break;
+            cout << feature << " ";
+        }
+        cout << endl;
+    }
+}
+// clang-format off
+// clang++ -std=c++17 -Wall -Wextra -O3 -DTEST_MAKE_NNUE_FEATURE -fPIC kore_extension.cpp -I/home/user/anaconda3/include/python3.8 /usr/local/lib/libboost_numpy38.a /usr/local/lib/libboost_python38.a -lpython3.8 -L/home/user/anaconda3/lib -g
 // clang-format on
 #endif

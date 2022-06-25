@@ -1298,7 +1298,8 @@ struct NNUEFeature {
                     const auto relative_point_index =
                         PointToIndex(relative_point);
                     const auto feature =
-                        relative_point_index * kFieldKoreResolution + encoded;
+                        offset + relative_point_index * kFieldKoreResolution +
+                        encoded;
                     shipyard_features[center_shipyard.player_id_]
                                      [center_shipyard.id_]
                                          .push_back(feature);
@@ -1388,7 +1389,7 @@ struct ActionTarget {
                     relative_position_ =
                         Relative(report.position_ - center_shipyard.position_);
                     n_steps_ = state_i.step_ - state.step_;
-                    assert(n_steps_ == i);
+                    assert(n_steps_ == i + 1);
                     switch (report.type_) {
                     case FleetReportType::kArrived:
                     case FleetReportType::kMerged:
@@ -1430,7 +1431,7 @@ struct ActionTarget {
     const auto& NSteps() const {
         // attack と convert もまあ一応大丈夫ではあるが…
         assert(action_target_type == ActionTargetType::kMove);
-        return n_steps_;
+        return n_steps_; // [1, 21]
     }
     const auto& Direction() const {
         assert(action_target_type == ActionTargetType::kAttack ||
