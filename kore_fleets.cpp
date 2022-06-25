@@ -1405,7 +1405,7 @@ struct ActionTarget {
                         action_target_type = ActionTargetType::kAttack;
                         goto ok;
                     case FleetReportType::kConverted:
-                        if (relative_position_.l1_norm() != n_steps_)
+                        if (relative_position_.l1_norm() != n_steps_ + 1)
                             break;
                         action_target_type = ActionTargetType::kConvert;
                         goto ok;
