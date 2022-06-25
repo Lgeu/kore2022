@@ -115,7 +115,7 @@ auto MakeNNUEFeature(const string& filename) {
                                                     : -100;
         }
         for (auto i = 0; i < NNUEFeature::kNGlobalFeatures; i++) {
-            ((float*)np_shipyard_features
+            ((float*)np_global_features
                  .get_data())[idx_data * NNUEFeature::kNGlobalFeatures + i] =
                 d.global_feature_[i];
         }
