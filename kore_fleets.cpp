@@ -51,6 +51,8 @@ struct Kore90Percentiles {
     const double& operator[](const int i) { return data[i]; }
 } kore_90_percentiles;
 
+#include "n_ships_quantization_table.cpp"
+
 template <> struct std::hash<Point> {
     size_t operator()(const Point& key) const { return key.y * 256 + key.x; }
 };
@@ -1442,6 +1444,22 @@ struct ActionTarget {
                action_target_type == ActionTargetType::kConvert);
         return initial_move_;
     }
+
+    auto QuantizedNships() const {
+        auto n = n_ships_;
+        switch (action_target_type) {
+        case ActionTargetType::kConvert:
+            n -= 50; // フォールスルー
+        case ActionTargetType::kSpawn:
+        case ActionTargetType::kMove:
+        case ActionTargetType::kAttack:
+            return n < (int)kNShipsQuantizationTable.size()
+                       ? kNShipsQuantizationTable[n]
+                       : kNShipsQuantizationTable.back() + 1;
+        default:
+            assert(false);
+        }
+    }
 };
 
 struct Feature {
@@ -1634,7 +1652,6 @@ int main() {
 // clang-format on
 #endif
 
-// TODO: 特徴の検証
 // TODO: NN 実装
 // TODO: DP で一番稼げる手を探す
 // TODO: MCTS

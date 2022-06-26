@@ -27,8 +27,6 @@ auto MakeNNUEFeature(const string& filename) {
 
     // PyTorch との相性も良さそう
 
-    // Action は null かもしれないことに留意
-
     auto is = ifstream(filename);
     if (!is) {
         throw runtime_error(string("ファイル ") + filename +
@@ -105,6 +103,7 @@ auto MakeNNUEFeature(const string& filename) {
     auto np_target_action_relative_position = NpEmpty<short>(n_data);
     auto np_target_action_n_steps = NpEmpty<signed char>(n_data);
     auto np_target_action_direction = NpEmpty<signed char>(n_data);
+    auto np_target_action_quantized_n_ships = NpEmpty<signed char>(n_data);
 
     for (auto idx_data = 0; idx_data < n_data; idx_data++) {
         const auto& d = data[idx_data];
@@ -123,8 +122,7 @@ auto MakeNNUEFeature(const string& filename) {
         ((bool*)np_target_values.get_data())[idx_data] = d.player_id_ == winner;
         ((signed char*)np_target_action_types.get_data())[idx_data] =
             (signed char)a.action_target_type;
-        ((short*)np_target_action_n_ships.get_data())[idx_data] =
-            (signed char)a.NShips();
+        ((short*)np_target_action_n_ships.get_data())[idx_data] = a.NShips();
         ((short*)np_target_action_relative_position.get_data())[idx_data] =
             a.action_target_type == ActionTargetType::kSpawn
                 ? -100
@@ -138,39 +136,16 @@ auto MakeNNUEFeature(const string& filename) {
                     a.action_target_type == ActionTargetType::kConvert
                 ? (int)a.InitialMove()
                 : -100;
+        ((signed char*)
+             np_target_action_quantized_n_ships.get_data())[idx_data] =
+            a.QuantizedNships();
     }
 
-    // 行動なしをかんがえてなかった
-
-    // const auto shipyard_features = nn::TensorSlice<typename T, int dims>
-
-    // auto np_shipyard_features =
-    //     np::empty(p::make_tuple(n_data, kMaxNShipyardFeatures),
-    //     np::dtype::get_builtin<int>());
-    // auto np_global_features =
-    //     np::empty(p::make_tuple(n_data, NNUEFeature::kNGlobalFeatures),
-    //               np::dtype::get_builtin<float>());
-    // auto np_target_values =
-    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<bool>());
-    // auto np_action_types =
-    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<signed
-    //     char>());
-    // auto np_target_action_n_ships =
-    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<short>());
-    // auto np_target_action_relative_position =
-    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<short>());
-    // auto np_target_action_n_steps =
-    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<signed
-    //     char>());
-    // auto np_target_action_direction =
-    //     np::empty(p::make_tuple(n_data), np::dtype::get_builtin<signed
-    //     char>());
-
-    return p::make_tuple(np_shipyard_features, np_global_features,
-                         np_target_values, np_target_action_types,
-                         np_target_action_n_ships,
-                         np_target_action_relative_position,
-                         np_target_action_n_steps, np_target_action_direction);
+    return p::make_tuple(
+        np_shipyard_features, np_global_features, np_target_values,
+        np_target_action_types, np_target_action_n_ships,
+        np_target_action_relative_position, np_target_action_n_steps,
+        np_target_action_direction, np_target_action_quantized_n_ships);
 }
 
 // ファイル名を受け取って、特徴と勝敗を返す
