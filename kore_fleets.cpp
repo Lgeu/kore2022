@@ -1321,17 +1321,18 @@ struct NNUEFeature {
         for (PlayerId player_id = 0; player_id < 2; player_id++) {
             auto idx_global_features = 0;
             auto& g = global_features[player_id];
-            g[idx_global_features++] = state.step_;
-            g[idx_global_features++] = state.players_[player_id].kore_;
-            g[idx_global_features++] = state.players_[1 - player_id].kore_;
-            g[idx_global_features++] = sum_cargo[player_id];
-            g[idx_global_features++] = sum_cargo[1 - player_id];
-            g[idx_global_features++] = n_ships[player_id];
-            g[idx_global_features++] = n_ships[1 - player_id];
+            g[idx_global_features++] = state.step_ * 1e-2;
+            g[idx_global_features++] = state.players_[player_id].kore_ * 1e-3;
             g[idx_global_features++] =
-                state.players_[player_id].shipyard_ids_.size();
+                state.players_[1 - player_id].kore_ * 1e-3;
+            g[idx_global_features++] = sum_cargo[player_id] * 1e-3;
+            g[idx_global_features++] = sum_cargo[1 - player_id] * 1e-3;
+            g[idx_global_features++] = n_ships[player_id] * 1e-2;
+            g[idx_global_features++] = n_ships[1 - player_id] * 1e-2;
             g[idx_global_features++] =
-                state.players_[1 - player_id].shipyard_ids_.size();
+                state.players_[player_id].shipyard_ids_.size() * 0.1;
+            g[idx_global_features++] =
+                state.players_[1 - player_id].shipyard_ids_.size() * 0.1;
 
             assert(idx_global_features == kNGlobalFeatures);
         }
@@ -1449,7 +1450,8 @@ struct ActionTarget {
         auto n = n_ships_;
         switch (action_target_type) {
         case ActionTargetType::kConvert:
-            n -= 50; // フォールスルー
+            n -= 50;
+            [[fallthrough]];
         case ActionTargetType::kSpawn:
         case ActionTargetType::kMove:
         case ActionTargetType::kAttack:
@@ -1652,6 +1654,7 @@ int main() {
 // clang-format on
 #endif
 
-// TODO: NN 実装
+// TODO: C++ 側で NN 実装
+// TODO: 推論結果から手への変換
 // TODO: DP で一番稼げる手を探す
 // TODO: MCTS
