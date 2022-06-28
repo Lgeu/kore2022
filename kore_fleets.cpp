@@ -336,6 +336,10 @@ struct Action {
             for (auto i = 0; i < n_shipyards; i++) {
                 string external_shipyard_id, action_raw;
                 is >> external_shipyard_id >> action_raw;
+                if (shipyard_id_mapper.external_to_internal_.find(
+                        external_shipyard_id) ==
+                    shipyard_id_mapper.external_to_internal_.end())
+                    continue;
                 const auto shipyard_id =
                     shipyard_id_mapper.ExternalToInternal(external_shipyard_id);
                 const auto [it, emplaced] =
