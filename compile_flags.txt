@@ -7,3 +7,4 @@
 -march=native
 -pthread
 -I/home/user/anaconda3/include/python3.8
+-l:libblas.so.3
