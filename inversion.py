@@ -1,6 +1,7 @@
 import re
+from pathlib import Path
 
-with open("kore_features.txt") as f:
+with open(Path(__file__).parent / "kore_features.txt") as f:
     lines = f.readlines()
 
 lines = [line.strip() for line in lines]
@@ -34,6 +35,7 @@ shipyard_feature_converter_f1 = get_shipyard_feature_converter(f1)
 shipyard_feature_converter_f2 = get_shipyard_feature_converter(f2)
 # print(shipyard_feature_converter_f1[-30:])
 # print(shipyard_feature_converter_f2[-30:])
+assert shipyard_feature_converter_f1 != shipyard_feature_converter_f2
 
 def get_direction_converter(f):
     directions = [(-1, 0), (0, 1), (1, 0), (0, -1)]
@@ -47,6 +49,7 @@ def get_direction_converter(f):
 direction_converter_f1 = get_direction_converter(f1)
 direction_converter_f2 = get_direction_converter(f2)
 #print(direction_converter_f1, direction_converter_f2)
+assert direction_converter_f1 != direction_converter_f2
 
 def get_relative_position_converter(f):
     converter = []
@@ -66,3 +69,4 @@ relative_position_converter_f1 = get_relative_position_converter(f1)
 relative_position_converter_f2 = get_relative_position_converter(f2)
 # print(relative_position_converter_f1)
 # print(relative_position_converter_f2)
+assert relative_position_converter_f1 != relative_position_converter_f2
