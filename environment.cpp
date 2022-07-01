@@ -7,6 +7,7 @@
 #include <istream>
 #include <map>
 #include <ostream>
+#include <random>
 #include <set>
 #include <string>
 
@@ -26,6 +27,8 @@ static constexpr auto kActTimeout = 3.0;
 static constexpr auto kRunTimeout = 9600.0;
 static constexpr auto kSpawnValues =
     array<int, 9>{2, 7, 17, 34, 60, 97, 147, 212, 294};
+
+auto rng = mt19937(42);
 
 using Point = Vec2<signed char>;
 using FleetId = short;
