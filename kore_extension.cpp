@@ -3,7 +3,7 @@
 #include <fstream>
 #include <stdexcept>
 
-#include "kore_fleets.cpp"
+#include "environment.cpp"
 
 namespace p = boost::python;
 namespace np = boost::python::numpy;
@@ -312,7 +312,7 @@ int main() {
     //     cout << ((float*)extracted.get_data())[0] << endl;
     // }
 
-    const auto t = MakeNNUEFeature("37984903.kif");
+    const auto t = MakeNNUEFeature("39240925.kif");
     const auto np_shipyard_features =
         (np::ndarray)p::extract<np::ndarray>(t[0]);
 

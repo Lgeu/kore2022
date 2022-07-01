@@ -1,4 +1,5 @@
 #include "../marathon/nn.cpp"
+#include "environment.cpp"
 
 // バッチサイズが 1 じゃないので BLAS 的なもの使う必要がある
 
@@ -201,6 +202,39 @@ struct NNUE {
                              out_action_type_tensor.Data());
 
         // 細かい decoder は別の構造体にする
+    }
+};
+
+struct NNUEGreedyAgent : Agent {
+    NNUE nnue;
+    SpawnDecoder spawn_decoder;
+    MoveDecoder move_decoder;
+    AttackDecoder attack_decoder;
+    ConvertDecoder convert_decoder;
+
+    Action ComputeNextMove(const State& state, const PlayerId = -1) const {
+        // TODO
+        return Action();
+    }
+
+    auto SampleAction() {
+        // TODO
+    }
+};
+struct NNUEMCTSAgent : Agent {
+    NNUE nnue;
+    SpawnDecoder spawn_decoder;
+    MoveDecoder move_decoder;
+    AttackDecoder attack_decoder;
+    ConvertDecoder convert_decoder;
+
+    Action ComputeNextMove(const State& state, const PlayerId = -1) const {
+        // TODO
+        return Action();
+    }
+
+    auto SampleAction() {
+        // TODO
     }
 };
 
