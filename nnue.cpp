@@ -2,6 +2,7 @@
 #include "environment.cpp"
 #include <limits>
 #include <random>
+#include <string>
 #include <type_traits>
 
 // バッチサイズが 1 じゃないので BLAS 的なもの使う必要がある
@@ -111,7 +112,7 @@ struct AttackDecoder {
         nn::Tensor<float, nn::Shape<kMaxBatchSize, 32>, has_buffer>;
     template <bool has_buffer>
     using RelativePositionTensor =
-        nn::Tensor<float, nn::Shape<kMaxBatchSize, 448>, has_buffer>;
+        nn::Tensor<float, nn::Shape<kMaxBatchSize, 224>, has_buffer>;
     template <bool has_buffer>
     using DirectionTensor =
         nn::Tensor<float, nn::Shape<kMaxBatchSize, 4>, has_buffer>;
@@ -341,7 +342,15 @@ struct NNUEGreedyAgent : Agent {
 
             } break;
             case 1: { // Move
-                //
+                // 順伝播
+                static auto n_ships_tensor = MoveDecoder::NShipsTensor<true>();
+                static auto relative_position_tensor =
+                    MoveDecoder::RelativePositionTensor<true>();
+                static auto n_steps_tensor = MoveDecoder::NStepsTensor<true>();
+                move_decoder.Forward(action_batch_size,
+                                     action_decoder_in_tensor, n_ships_tensor,
+                                     relative_position_tensor, n_steps_tensor);
+
                 // まず DP する
 
                 // dp[step][plan_length][y][x] 最大の kore
@@ -350,13 +359,14 @@ struct NNUEGreedyAgent : Agent {
                 // 偶奇で半分のマスは使用されない 25000
                 // 3 方向に 10 マスずつ 7.5 * 10^5
                 // step >= plan_length
-                // plan_length は高々 11 としていい
+                // plan_length は高々 9 とする
+                // - plan_length を 10 にするには 91 隻必要
 
-                static constexpr auto kMaxPlanLength = 11;
+                static constexpr auto kMaxPlanLength = 9;
 
                 // NN: 256 * (960) ~ 2.5 * 10^5
                 static auto dp = array<
-                    array<array<array<float, 11>, 11>, kMaxPlanLength + 1>,
+                    array<array<array<float, 11>, 11>, kMaxPlanLength + 2>,
                     22>();
                 static auto dp_from =
                     array<array<array<array<signed char, 11>, 11>,
@@ -382,7 +392,7 @@ struct NNUEGreedyAgent : Agent {
                             : NNUEFeature::kPlayer1Shipyard |
                                   NNUEFeature::kPlayer1Fleet;
 
-                    fill((float*)dp.begin(), (float*)dp.end(), -100.0f);
+                    fill((float*)dp.begin(), (float*)dp.end(), -1e30f);
 
                     const auto normalize = [](const int x) {
                         return x < 0 ? x + kSize : x >= kSize ? x - kSize : x;
@@ -420,9 +430,9 @@ struct NNUEGreedyAgent : Agent {
                                                [v >> 1] &
                                         0b111;
 
-                                    // North
+                                    // North y-, u-, v-
                                     do {
-                                        if (last_direction == 0)
+                                        if (last_direction == (int)Direction::N)
                                             break;
                                         const auto max_distance = min(
                                             21 - step,
@@ -468,29 +478,340 @@ struct NNUEGreedyAgent : Agent {
                                                         d_plan_length][u2 >> 1]
                                                        [v2 >> 1] =
                                                            (distance - 1) << 3 |
-                                                           0;
+                                                           (int)Direction::N;
                                             }
+
+                                            // 回収する場合も直帰でいい
+                                            if (target_info.flags &
+                                                mask_plan_length_1)
+                                                break;
                                         }
-
                                     } while (false);
-                                    // East
+                                    // East x+, u-, v+
                                     do {
+                                        if (last_direction == (int)Direction::E)
+                                            break;
+                                        const auto max_distance = min(
+                                            21 - step,
+                                            10 - max(0, max(10 - u, v - 10)));
 
+                                        for (auto distance = 1;
+                                             distance <= max_distance;
+                                             distance++) {
+
+                                            const auto y2 = y;
+                                            const auto x2 =
+                                                x + distance < kSize
+                                                    ? x + distance
+                                                    : x + distance - kSize;
+                                            const auto& target_info =
+                                                features.future_info[step +
+                                                                     distance]
+                                                                    [{y2, x2}];
+
+                                            // 相手の造船所、相手の艦隊、相手の隣接艦隊がある場合、計算しない
+                                            if (target_info.flags &
+                                                mask_opponent)
+                                                break;
+
+                                            const auto u2 = u - distance;
+                                            const auto v2 = v + distance;
+                                            const auto gain = target_info.kore;
+                                            const auto d_plan_length =
+                                                distance == 1 ||
+                                                        (target_info.flags &
+                                                         mask_plan_length_1)
+                                                    ? 1
+                                                    : 2;
+
+                                            auto& k2 =
+                                                dp[step + distance]
+                                                  [plan_length + d_plan_length]
+                                                  [u2 >> 1][v2 >> 1];
+                                            if (k2 < k + gain) {
+                                                k2 = k + gain;
+                                                dp_from[step + distance]
+                                                       [plan_length +
+                                                        d_plan_length][u2 >> 1]
+                                                       [v2 >> 1] =
+                                                           (distance - 1) << 3 |
+                                                           (int)Direction::E;
+                                            }
+                                            if (target_info.flags &
+                                                mask_plan_length_1)
+                                                break;
+                                        }
                                     } while (false);
-                                    // TODO
+                                    // South y+, u+, v+
+                                    do {
+                                        if (last_direction == (int)Direction::S)
+                                            break;
+                                        const auto max_distance = min(
+                                            21 - step,
+                                            10 - max(0, max(u - 10, v - 10)));
+
+                                        for (auto distance = 1;
+                                             distance <= max_distance;
+                                             distance++) {
+
+                                            const auto y2 =
+                                                y + distance < kSize
+                                                    ? y + distance
+                                                    : y + distance - kSize;
+                                            const auto x2 = x;
+                                            const auto& target_info =
+                                                features.future_info[step +
+                                                                     distance]
+                                                                    [{y2, x2}];
+
+                                            // 相手の造船所、相手の艦隊、相手の隣接艦隊がある場合、計算しない
+                                            if (target_info.flags &
+                                                mask_opponent)
+                                                break;
+
+                                            const auto u2 = u + distance;
+                                            const auto v2 = v + distance;
+                                            const auto gain = target_info.kore;
+                                            const auto d_plan_length =
+                                                distance == 1 ||
+                                                        (target_info.flags &
+                                                         mask_plan_length_1)
+                                                    ? 1
+                                                    : 2;
+
+                                            auto& k2 =
+                                                dp[step + distance]
+                                                  [plan_length + d_plan_length]
+                                                  [u2 >> 1][v2 >> 1];
+                                            if (k2 < k + gain) {
+                                                k2 = k + gain;
+                                                dp_from[step + distance]
+                                                       [plan_length +
+                                                        d_plan_length][u2 >> 1]
+                                                       [v2 >> 1] =
+                                                           (distance - 1) << 3 |
+                                                           (int)Direction::S;
+                                            }
+
+                                            // 回収する場合も直帰でいい
+                                            if (target_info.flags &
+                                                mask_plan_length_1)
+                                                break;
+                                        }
+                                    } while (false);
+                                    // West x-, u+, v-
+                                    do {
+                                        if (last_direction == (int)Direction::W)
+                                            break;
+                                        const auto max_distance = min(
+                                            21 - step,
+                                            10 - max(0, max(u - 10, 10 - v)));
+
+                                        for (auto distance = 1;
+                                             distance <= max_distance;
+                                             distance++) {
+
+                                            const auto y2 = y;
+                                            const auto x2 =
+                                                x >= distance
+                                                    ? x - distance
+                                                    : x - distance + kSize;
+                                            ;
+                                            const auto& target_info =
+                                                features.future_info[step +
+                                                                     distance]
+                                                                    [{y2, x2}];
+
+                                            // 相手の造船所、相手の艦隊、相手の隣接艦隊がある場合、計算しない
+                                            if (target_info.flags &
+                                                mask_opponent)
+                                                break;
+
+                                            const auto u2 = u + distance;
+                                            const auto v2 = v - distance;
+                                            const auto gain = target_info.kore;
+                                            const auto d_plan_length =
+                                                distance == 1 ||
+                                                        (target_info.flags &
+                                                         mask_plan_length_1)
+                                                    ? 1
+                                                    : 2;
+
+                                            auto& k2 =
+                                                dp[step + distance]
+                                                  [plan_length + d_plan_length]
+                                                  [u2 >> 1][v2 >> 1];
+                                            if (k2 < k + gain) {
+                                                k2 = k + gain;
+                                                dp_from[step + distance]
+                                                       [plan_length +
+                                                        d_plan_length][u2 >> 1]
+                                                       [v2 >> 1] =
+                                                           (distance - 1) << 3 |
+                                                           (int)Direction::W;
+                                            }
+
+                                            // 回収する場合も直帰でいい
+                                            if (target_info.flags &
+                                                mask_plan_length_1)
+                                                break;
+                                        }
+                                    } while (false);
                                 }
                             }
                         }
                     }
+
+                    // relative_position は 10 マス以内だけでいいか
+
+                    // 各マスについて、目的地たりえるか集計
+                    // TODO: 終点であることを確認してなかった…
+                    auto can_be_destination = array<bool, 224>();
+                    // 距離が偶数
+                    for (auto step = 2; step <= 21; step += 2)
+                        for (auto plan_length = 1;
+                             plan_length <= min(kMaxPlanLength, step);
+                             plan_length++)
+                            for (auto u = 0; u <= 10; u++)
+                                for (auto v = 0; v <= 10; v++) {
+                                    const auto y = ;
+                                    can_be_destination[u * 11 + v] |=
+                                        dp[step][plan_length][u][v] >= 0.0f;
+                                }
+                    // 距離が奇数
+                    for (auto step = 1; step <= 21; step += 2)
+                        for (auto plan_length = 1;
+                             plan_length <= min(kMaxPlanLength, step);
+                             plan_length++)
+                            for (auto u = 0; u <= 9; u++)
+                                for (auto v = 0; v <= 9; v++) {
+                                    //
+                                    can_be_destination[121 + u * 10 + v] |=
+                                        dp[step][plan_length][u][v] >= 0.0f;
+                                }
+
+                    // 最初に目的地を決める
+                    for (auto i = 0; i < 224; i++)
+                        if (!can_be_destination[i])
+                            relative_position_tensor[ab][i] = -1e30f;
+                    auto relative_position = 0;
+                    nn::F::Argmax(relative_position_tensor[ab],
+                                  relative_position);
+
+                    // n_steps を、position から定まる可能なものから決める
+                    auto n_steps_candidates = array<bool, 24>();
+                    const auto target_u = relative_position < 121
+                                              ? relative_position / 11
+                                              : (relative_position - 121) / 10;
+                    const auto target_v = relative_position < 121
+                                              ? relative_position & 11
+                                              : (relative_position - 121) % 11;
+                    for (auto step = relative_position < 121 ? 2 : 1;
+                         step <= 21; step += 2)
+                        for (auto plan_length = 1;
+                             plan_length <= min(kMaxPlanLength, step);
+                             plan_length++)
+                            n_steps_candidates[step] |=
+                                dp[step][plan_length][target_u][target_v] >=
+                                0.0f;
+                    for (auto i = 0; i < 24; i++)
+                        if (!n_steps_candidates[i])
+                            n_steps_tensor[ab][i] = -1e30f;
+                    auto n_steps = 0;
+                    nn::F::Argmax(n_steps_tensor[ab], n_steps);
+
+                    // n_ships を、可能なものに決める
+                    auto min_n_ships = 999;
+                    for (auto plan_length = 1;
+                         plan_length <= min(kMaxPlanLength, n_steps);
+                         plan_length++) {
+                        if (dp[n_steps][plan_length][target_u][target_v] >=
+                            0.0f) {
+                            // plan_length から n_ships への変換
+                            static constexpr auto mapping =
+                                array<int, kMaxPlanLength + 1>{
+                                    0, 1, 2, 3, 5, 8, 13, 21, 34, 55,
+                                };
+                            min_n_ships = mapping[plan_length];
+                        }
+                    }
+                    const auto max_n_ships = shipyard.ship_count_;
+                    if (min_n_ships > max_n_ships) {
+                        // 失敗処理はこれでいいのか？
+                        cerr << "失敗しちゃったよ move" << endl;
+                        continue;
+                    }
+                    const auto min_quantized_n_ships =
+                        kNShipsQuantizationTable[min_n_ships];
+                    const auto max_quantized_n_ships =
+                        max_n_ships < (int)kNShipsQuantizationTable.size()
+                            ? kNShipsQuantizationTable[max_n_ships]
+                            : kNShipsQuantizationTable.back() + 1;
+
+                    for (auto i = 0; i < 32; i++)
+                        if (i < min_quantized_n_ships ||
+                            max_quantized_n_ships < i)
+                            n_ships_tensor[ab][i] = 1e-30f;
+                    auto quantized_n_ships = -100;
+                    nn::F::Argmax(n_ships_tensor[ab], quantized_n_ships);
+                    const auto n_ships = uniform_int_distribution<>(
+                        max((int)kDequantizationTable[quantized_n_ships],
+                            min_n_ships),
+                        min((int)kDequantizationTable[quantized_n_ships + 1],
+                            (int)max_n_ships))(rng);
+
+                    // もっとも良い plan_length をテーブルを走査して見つける
+                    // TODO
+                    auto target_plan_length = 0;
+
+                    // 経路復元
+                    // 回収する場合は、戻る文字を残すようにする
+                    auto flight_plan = string();
+                    auto path_y = target_u + target_v + n_steps % 2;
+                    auto path_x = target_v - target_u;
+                    auto path_step = n_steps;
+                    auto path_plan_length = target_plan_length;
+                    do {
+                        const auto u = (path_y - path_x) >> 1;
+                        const auto v = (path_y + path_x) >> 1;
+                        assert(dp[path_step][path_plan_length][u][v] >= 0.0f);
+                        const auto number_direction =
+                            dp_from[path_step][path_plan_length][u][v];
+                        const auto direction = number_direction & 0b111;
+                        if (direction == 0b111) {
+                            assert(path_plan_length == 0);
+                            assert(path_step == 0);
+                            assert(path_y == 0);
+                            assert(path_x == 0);
+                            break;
+                        }
+                        assert(path_step > 0);
+                        const auto number = number_direction >> 3;
+                        if (number_direction)
+                            flight_plan += to_string(number_direction);
+                        flight_plan += "NESW"[direction];
+                        switch ((Direction)direction) {
+                        case Direction::N:
+                            path_y += 1 + number_direction;
+                            break;
+                        case Direction::E:
+                            path_x -= 1 + number_direction;
+                            break;
+                        case Direction::S:
+                            path_y -= 1 + number_direction;
+                            break;
+                        case Direction::W:
+                            path_x += 1 + number_direction;
+                            break;
+                        }
+                        path_step -= 1 + number_direction;
+                        path_plan_length -= number_direction == 0 ? 1 : 2;
+                    } while (true);
+                    reverse(flight_plan.begin(), flight_plan.end());
+                    result.actions.insert(make_pair(
+                        shipyard_id, ShipyardAction(ShipyardActionType::kLaunch,
+                                                    n_ships, flight_plan)));
                 }
-                // n_ships と n_steps_decoder を独立に決める
-                // -> max_flight_plan_len が
-
-                // relative_position_decoder は最後　いや、わからん
-
-                // n_ships_decoder;
-                // BatchLinear<256, 448> relative_position_decoder;
-                // BatchLinear<256, 24> n_steps_decoder
             } break;
             case 2:
                 break;
