@@ -1177,11 +1177,28 @@ struct NNUEFeature {
     array<unordered_map<int, vector<int>>, 2> shipyard_features;
     array<array<float, kNGlobalFeatures>, 2> global_features;
 
+    struct FeatureInfo {
+        unsigned char flags;
+        float kore;
+    };
+    array<Board<FeatureInfo, kSize, kSize>, 22> future_info;
+    enum : unsigned char {
+        kPlayer0Shipyard = 1,
+        kPlayer0Fleet = 2,
+        kPlayer0FleetAdjacent = 4,
+        kPlayer1Shipyard = 8,
+        kPlayer1Fleet = 16,
+        kPlayer1FleetAdjacent = 32,
+    };
+
     NNUEFeature(const State& state) {
         // 共通した global feature と、shipyard ごとの feature を作る
         // 2 人分
 
         auto state_i = state;
+
+        fill((FeatureInfo*)future_info.begin(), (FeatureInfo*)future_info.end(),
+             FeatureInfo());
 
         // fleet
         for (auto i = 0; i <= kFutureSteps; i++) {
@@ -1204,6 +1221,34 @@ struct NNUEFeature {
                                          .push_back(feature);
                 }
             }
+
+            // future_info に書き込む
+            for (const auto& [_, fleet] : state_i.fleets_) {
+                const auto& p = fleet.position_;
+                future_info[i][p].flags |=
+                    fleet.player_id_ == 0 ? kPlayer0Fleet : kPlayer1Fleet;
+                future_info[i][{(int)p.y, p.x == 0 ? kSize - 1 : p.x - 1}]
+                    .flags |= fleet.player_id_ == 0 ? kPlayer0FleetAdjacent
+                                                    : kPlayer1FleetAdjacent;
+                future_info[i][{(int)p.y, p.x == kSize - 1 ? 0 : p.x + 1}]
+                    .flags |= fleet.player_id_ == 0 ? kPlayer0FleetAdjacent
+                                                    : kPlayer1FleetAdjacent;
+                future_info[i][{p.y == 0 ? kSize - 1 : p.y - 1, (int)p.x}]
+                    .flags |= fleet.player_id_ == 0 ? kPlayer0FleetAdjacent
+                                                    : kPlayer1FleetAdjacent;
+                future_info[i][{p.y == kSize - 1 ? 0 : p.y + 1, (int)p.x}]
+                    .flags |= fleet.player_id_ == 0 ? kPlayer0FleetAdjacent
+                                                    : kPlayer1FleetAdjacent;
+            }
+            for (const auto& [_, shipyard] : state_i.shipyards_) {
+                const auto& p = shipyard.position_;
+                future_info[i][{p.y, p.x}].flags |= shipyard.player_id_ == 0
+                                                        ? kPlayer0Shipyard
+                                                        : kPlayer1Shipyard;
+            }
+            for (auto y = 0; y < kSize; y++)
+                for (auto x = 0; x < kSize; x++)
+                    future_info[i][{y, x}].kore = state_i.board_[{y, x}].kore_;
 
             // 次のターンへ
             auto action = SpawnAgent().ComputeNextMove(state_i, 0);

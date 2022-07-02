@@ -360,55 +360,129 @@ struct NNUEGreedyAgent : Agent {
                     22>();
                 static auto dp_from =
                     array<array<array<array<signed char, 11>, 11>,
-                                kMaxPlanLength + 1>,
+                                kMaxPlanLength + 2>,
                           22>();
 
-                fill((float*)dp.begin(), (float*)dp.end(), -100.0f);
+                // shipyard ごとに処理
+                for (auto ab = 0; ab < action_batch_size; ab++) {
+                    const auto shipyard_id = action_shipyard_ids[ab];
+                    const auto& shipyard = state.shipyards_.at(shipyard_id);
+                    const auto mask_opponent =
+                        shipyard.player_id_ == 0
+                            ? NNUEFeature::kPlayer1Shipyard |
+                                  NNUEFeature::kPlayer1Fleet |
+                                  NNUEFeature::kPlayer1FleetAdjacent
+                            : NNUEFeature::kPlayer0Shipyard |
+                                  NNUEFeature::kPlayer0Fleet |
+                                  NNUEFeature::kPlayer0FleetAdjacent;
+                    const auto mask_plan_length_1 =
+                        shipyard.player_id_ == 0
+                            ? NNUEFeature::kPlayer0Shipyard |
+                                  NNUEFeature::kPlayer0Fleet
+                            : NNUEFeature::kPlayer1Shipyard |
+                                  NNUEFeature::kPlayer1Fleet;
 
-                dp[0][0][5][5] = 0.0f;
-                dp_from[0][0][5][5] =
-                    7; // 下 3 ビットで、0-3 が N-W 、7 が None
-                for (auto step = 0; step < 21; step++) {
-                    for (auto plan_length = 0;
-                         plan_length < min(kMaxPlanLength, step + 1);
-                         plan_length++) {
-                        const auto first_uv = max(step & 1, 10 - step);
-                        const auto last_uv = min(20 - (step & 1), 10 + step);
-                        for (auto u = first_uv; u <= last_uv; u += 2) {
-                            for (auto v = first_uv; v <= last_uv; v += 2) {
-                                const auto k =
-                                    dp[step][plan_length][u >> 1][v >> 1];
-                                if (k == -100.0f)
-                                    continue;
-                                const auto y = (u + v) >> 1;
-                                const auto x = (v - u) >> 1;
+                    fill((float*)dp.begin(), (float*)dp.end(), -100.0f);
 
-                                const auto last_direction =
-                                    dp_from[step][plan_length][u >> 1][v >> 1] &
-                                    0b111;
-                                if (last_direction != 0) {
-                                    const auto max_distance =
-                                        10 - max(0, max(10 - u, 10 - v));
-                                    if (max_distance >= 1) {
-                                        const auto u2 = u - 1;
-                                        const auto v2 = v - 1;
-                                        auto gain = 0.0f;
-                                        // TODO: ここで y と x 使って state
-                                        // から量を求めたりする
-                                        // 衝突判定とかも必要
-                                        auto& k2 = dp[step + 1][plan_length + 1]
-                                                     [u2 >> 1][v2 >> 1];
-                                        if (k2 < k + gain)
-                                    }
+                    const auto normalize = [](const int x) {
+                        return x < 0 ? x + kSize : x >= kSize ? x - kSize : x;
+                    };
+
+                    dp[0][0][5][5] = 0.0f;
+                    // 下 3 ビットで、0-3 が N-W 、7 が None
+                    dp_from[0][0][5][5] = 7;
+                    for (auto step = 0; step < 21; step++) {
+                        for (auto plan_length = 0;
+                             plan_length < min(kMaxPlanLength, step + 1);
+                             plan_length++) {
+                            const auto first_uv = max(step & 1, 10 - step);
+                            const auto last_uv =
+                                min(20 - (step & 1), 10 + step);
+                            for (auto u = first_uv; u <= last_uv; u += 2) {
+                                for (auto v = first_uv; v <= last_uv; v += 2) {
+                                    const auto k =
+                                        dp[step][plan_length][u >> 1][v >> 1];
+                                    if (k == -100.0f)
+                                        continue;
+                                    const auto dy = (u + v) >> 1;
+                                    const auto y =
+                                        normalize(shipyard.position_.y + dy);
+                                    const auto dx = (v - u) >> 1;
+                                    const auto x =
+                                        normalize(shipyard.position_.x + dx);
+                                    if (features.future_info[step][{y, x}]
+                                                .flags != 0 &&
+                                        step >= 1)
+                                        continue;
+
+                                    const auto last_direction =
+                                        dp_from[step][plan_length][u >> 1]
+                                               [v >> 1] &
+                                        0b111;
+
+                                    // North
+                                    do {
+                                        if (last_direction == 0)
+                                            break;
+                                        const auto max_distance = min(
+                                            21 - step,
+                                            10 - max(0, max(10 - u, 10 - v)));
+
+                                        for (auto distance = 1;
+                                             distance <= max_distance;
+                                             distance++) {
+
+                                            const auto y2 =
+                                                y >= distance
+                                                    ? y - distance
+                                                    : y - distance + kSize;
+                                            const auto x2 = x;
+                                            const auto& target_info =
+                                                features.future_info[step +
+                                                                     distance]
+                                                                    [{y2, x2}];
+
+                                            // 相手の造船所、相手の艦隊、相手の隣接艦隊がある場合、計算しない
+                                            if (target_info.flags &
+                                                mask_opponent)
+                                                break;
+
+                                            const auto u2 = u - distance;
+                                            const auto v2 = v - distance;
+                                            const auto gain = target_info.kore;
+                                            const auto d_plan_length =
+                                                distance == 1 ||
+                                                        (target_info.flags &
+                                                         mask_plan_length_1)
+                                                    ? 1
+                                                    : 2;
+
+                                            auto& k2 =
+                                                dp[step + distance]
+                                                  [plan_length + d_plan_length]
+                                                  [u2 >> 1][v2 >> 1];
+                                            if (k2 < k + gain) {
+                                                k2 = k + gain;
+                                                dp_from[step + distance]
+                                                       [plan_length +
+                                                        d_plan_length][u2 >> 1]
+                                                       [v2 >> 1] =
+                                                           (distance - 1) << 3 |
+                                                           0;
+                                            }
+                                        }
+
+                                    } while (false);
+                                    // East
+                                    do {
+
+                                    } while (false);
+                                    // TODO
                                 }
-                                if (last_direction != 1) {
-                                }
-                                // TODO
                             }
                         }
                     }
                 }
-
                 // n_ships と n_steps_decoder を独立に決める
                 // -> max_flight_plan_len が
 
