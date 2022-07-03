@@ -47,8 +47,9 @@ template <int in_features, int out_features> struct BatchLinear {
 
         // i * w.T = o
 
-        for (auto i = 0; i < batch_size; i++)
-            memcpy(output + i * sizeof(bias), bias.Data(), sizeof(bias));
+        for (auto b = 0; b < batch_size; b++)
+            memcpy(output + b * bias.n_data, bias.Data(),
+                   sizeof(float) * bias.n_data);
 
         static constexpr auto o = out_features;
         static constexpr auto i = in_features;
@@ -243,6 +244,9 @@ struct NNUE {
         static auto x2 = nn::TensorBuffer<float, kMaxBatchSize, 256>();
         global_feature_encoder.Forward(batch_size, global_feature_tensor.Data(),
                                        x2.Data());
+
+        x2[0].Print(); //===============
+        x2[1].Print();
         for (auto b = 0; b < batch_size; b++)
             x1[b] += x2[b];
 
@@ -1258,9 +1262,12 @@ static void TestNNUE() {
             }
             cout << endl;
 
+            for (auto i = 0; i < 5; i++)
+                cout << global_feature_tensor[2][i] << " ";
+            cout << endl;
             cout << endl;
 
-            if (state.step_ >= 50)
+            if (state.step_ >= 150)
                 return;
 
             for (const auto& [shipyard_id, shipyard_action] : action.actions) {
@@ -1284,3 +1291,5 @@ int main() {
     //
     TestNNUE();
 }
+
+// 相手のが狂うのはなぜ？
