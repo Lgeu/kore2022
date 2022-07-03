@@ -4,6 +4,7 @@
 #include <random>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 // バッチサイズが 1 じゃないので BLAS 的なもの使う必要がある
 
@@ -80,7 +81,7 @@ struct MoveDecoder {
         nn::Tensor<float, nn::Shape<kMaxBatchSize, 32>, has_buffer>;
     template <bool has_buffer>
     using RelativePositionTensor =
-        nn::Tensor<float, nn::Shape<kMaxBatchSize, 448>, has_buffer>;
+        nn::Tensor<float, nn::Shape<kMaxBatchSize, 224>, has_buffer>;
     template <bool has_buffer>
     using NStepsTensor =
         nn::Tensor<float, nn::Shape<kMaxBatchSize, 24>, has_buffer>;
@@ -218,6 +219,18 @@ struct NNUE {
 
 struct ActionSampler {};
 
+inline auto TranslatePosition221ToUV(const int p) {
+    const auto u = p < 121 ? p / 11 : (p - 121) / 10;
+    const auto v = p < 121 ? p % 11 : (p - 121) % 11;
+    return make_pair(u, v);
+}
+inline auto TranslatePosition221ToYX(const int p) {
+    const auto [u, v] = TranslatePosition221ToUV(p);
+    const auto y = u + v - (p < 121 ? 10 : 9);
+    const auto x = v - u - 10;
+    return make_pair(y, x);
+}
+
 struct NNUEGreedyAgent : Agent {
     NNUE nnue;
     SpawnDecoder spawn_decoder;
@@ -226,7 +239,6 @@ struct NNUEGreedyAgent : Agent {
     ConvertDecoder convert_decoder;
 
     Action ComputeNextMove(const State& state, const PlayerId = -1) const {
-        // TODO
         static auto global_feature_tensor = NNUE::GlobalFeatureTensor<true>();
         static auto shipyard_feature_tensor =
             NNUE::ShipyardFeatureTensor<true>();
@@ -287,8 +299,14 @@ struct NNUEGreedyAgent : Agent {
                 mean_value += value_tensor[b];
             else
                 mean_value -= value_tensor[b];
+
+            // 艦数が足りないなら convert は弾く
+            if (state.shipyards_.at(shipyard_ids[b]).ship_count_ < kConvertCost)
+                action_type_tensor[b][3] = -1e30f;
+
             nn::F::SampleFromLogit(action_type_tensor[b], action_types[b]);
         }
+        mean_value /= batch_size;
 
         // 各 Action を具体的にしていく
         auto player_spawn_capacities = array<int, 2>();
@@ -303,9 +321,13 @@ struct NNUEGreedyAgent : Agent {
             auto action_batch_size = 0;
             for (auto b = 0; b < batch_size; b++)
                 if (action_types[b] == action_id) {
+                    action_shipyard_ids[action_batch_size] = shipyard_ids[b];
                     action_decoder_in_tensor[action_batch_size++] =
                         code_tensor[b];
                 }
+            const auto normalize = [](const int x) {
+                return x < 0 ? x + kSize : x >= kSize ? x - kSize : x;
+            };
             switch (action_id) {
             case 0: { // Spawn
                 // 順伝播
@@ -325,14 +347,6 @@ struct NNUEGreedyAgent : Agent {
                     auto n_ships = 0;
                     // spawn に関しては quantize の前後が同じ
                     nn::F::Argmax(n_ships_tensor[ab], n_ships);
-                    // const auto n_ships =
-                    //     kDequantizationTable[quantized_n_ships];
-                    // const auto n_ships_r =
-                    //     kDequantizationTable[quantized_n_ships + 1];
-                    // const auto n_ships = uniform_int_distribution<>(
-                    //     n_ships_l, n_ships_r - 1)(rng);
-
-                    // TODO
                     result.actions.insert(make_pair(
                         shipyard_id,
                         ShipyardAction(ShipyardActionType::kSpawn, n_ships)));
@@ -394,13 +408,11 @@ struct NNUEGreedyAgent : Agent {
 
                     fill((float*)dp.begin(), (float*)dp.end(), -1e30f);
 
-                    const auto normalize = [](const int x) {
-                        return x < 0 ? x + kSize : x >= kSize ? x - kSize : x;
-                    };
-
                     dp[0][0][5][5] = 0.0f;
                     // 下 3 ビットで、0-3 が N-W 、7 が None
                     dp_from[0][0][5][5] = 7;
+                    // 各マスについて、目的地たりえるか集計する配列
+                    auto can_be_destination = array<bool, 224>();
                     for (auto step = 0; step < 21; step++) {
                         for (auto plan_length = 0;
                              plan_length < min(kMaxPlanLength, step + 1);
@@ -414,10 +426,11 @@ struct NNUEGreedyAgent : Agent {
                                         dp[step][plan_length][u >> 1][v >> 1];
                                     if (k == -100.0f)
                                         continue;
-                                    const auto dy = (u + v) >> 1;
+                                    // ここの u, v は 2 倍してあるので注意
+                                    const auto dy = ((u + v) >> 1) - 10;
                                     const auto y =
                                         normalize(shipyard.position_.y + dy);
-                                    const auto dx = (v - u) >> 1;
+                                    const auto dx = ((v - u) >> 1) - 10;
                                     const auto x =
                                         normalize(shipyard.position_.x + dx);
                                     if (features.future_info[step][{y, x}]
@@ -457,8 +470,8 @@ struct NNUEGreedyAgent : Agent {
                                                 mask_opponent)
                                                 break;
 
-                                            const auto u2 = u - distance;
-                                            const auto v2 = v - distance;
+                                            const auto u2 = (u - distance) >> 1;
+                                            const auto v2 = (v - distance) >> 1;
                                             const auto gain = target_info.kore;
                                             const auto d_plan_length =
                                                 distance == 1 ||
@@ -470,21 +483,25 @@ struct NNUEGreedyAgent : Agent {
                                             auto& k2 =
                                                 dp[step + distance]
                                                   [plan_length + d_plan_length]
-                                                  [u2 >> 1][v2 >> 1];
+                                                  [u2][v2];
                                             if (k2 < k + gain) {
                                                 k2 = k + gain;
                                                 dp_from[step + distance]
                                                        [plan_length +
-                                                        d_plan_length][u2 >> 1]
-                                                       [v2 >> 1] =
+                                                        d_plan_length][u2][v2] =
                                                            (distance - 1) << 3 |
                                                            (int)Direction::N;
                                             }
 
                                             // 回収する場合も直帰でいい
                                             if (target_info.flags &
-                                                mask_plan_length_1)
+                                                mask_plan_length_1) {
+                                                can_be_destination
+                                                    [(step + distance) % 2
+                                                         ? 121 + u2 * 10 + v2
+                                                         : u2 * 11 + v2] = true;
                                                 break;
+                                            }
                                         }
                                     } while (false);
                                     // East x+, u-, v+
@@ -514,8 +531,8 @@ struct NNUEGreedyAgent : Agent {
                                                 mask_opponent)
                                                 break;
 
-                                            const auto u2 = u - distance;
-                                            const auto v2 = v + distance;
+                                            const auto u2 = (u - distance) >> 1;
+                                            const auto v2 = (v + distance) >> 1;
                                             const auto gain = target_info.kore;
                                             const auto d_plan_length =
                                                 distance == 1 ||
@@ -527,19 +544,25 @@ struct NNUEGreedyAgent : Agent {
                                             auto& k2 =
                                                 dp[step + distance]
                                                   [plan_length + d_plan_length]
-                                                  [u2 >> 1][v2 >> 1];
+                                                  [u2][v2];
                                             if (k2 < k + gain) {
                                                 k2 = k + gain;
                                                 dp_from[step + distance]
                                                        [plan_length +
-                                                        d_plan_length][u2 >> 1]
-                                                       [v2 >> 1] =
+                                                        d_plan_length][u2][v2] =
                                                            (distance - 1) << 3 |
                                                            (int)Direction::E;
                                             }
+
+                                            // 回収する場合も直帰でいい
                                             if (target_info.flags &
-                                                mask_plan_length_1)
+                                                mask_plan_length_1) {
+                                                can_be_destination
+                                                    [(step + distance) % 2
+                                                         ? 121 + u2 * 10 + v2
+                                                         : u2 * 11 + v2] = true;
                                                 break;
+                                            }
                                         }
                                     } while (false);
                                     // South y+, u+, v+
@@ -569,8 +592,8 @@ struct NNUEGreedyAgent : Agent {
                                                 mask_opponent)
                                                 break;
 
-                                            const auto u2 = u + distance;
-                                            const auto v2 = v + distance;
+                                            const auto u2 = (u + distance) >> 1;
+                                            const auto v2 = (v + distance) >> 1;
                                             const auto gain = target_info.kore;
                                             const auto d_plan_length =
                                                 distance == 1 ||
@@ -582,21 +605,25 @@ struct NNUEGreedyAgent : Agent {
                                             auto& k2 =
                                                 dp[step + distance]
                                                   [plan_length + d_plan_length]
-                                                  [u2 >> 1][v2 >> 1];
+                                                  [u2][v2];
                                             if (k2 < k + gain) {
                                                 k2 = k + gain;
                                                 dp_from[step + distance]
                                                        [plan_length +
-                                                        d_plan_length][u2 >> 1]
-                                                       [v2 >> 1] =
+                                                        d_plan_length][u2][v2] =
                                                            (distance - 1) << 3 |
                                                            (int)Direction::S;
                                             }
 
                                             // 回収する場合も直帰でいい
                                             if (target_info.flags &
-                                                mask_plan_length_1)
+                                                mask_plan_length_1) {
+                                                can_be_destination
+                                                    [(step + distance) % 2
+                                                         ? 121 + u2 * 10 + v2
+                                                         : u2 * 11 + v2] = true;
                                                 break;
+                                            }
                                         }
                                     } while (false);
                                     // West x-, u+, v-
@@ -627,8 +654,8 @@ struct NNUEGreedyAgent : Agent {
                                                 mask_opponent)
                                                 break;
 
-                                            const auto u2 = u + distance;
-                                            const auto v2 = v - distance;
+                                            const auto u2 = (u + distance) >> 1;
+                                            const auto v2 = (v - distance) >> 1;
                                             const auto gain = target_info.kore;
                                             const auto d_plan_length =
                                                 distance == 1 ||
@@ -640,55 +667,31 @@ struct NNUEGreedyAgent : Agent {
                                             auto& k2 =
                                                 dp[step + distance]
                                                   [plan_length + d_plan_length]
-                                                  [u2 >> 1][v2 >> 1];
+                                                  [u2][v2];
                                             if (k2 < k + gain) {
                                                 k2 = k + gain;
                                                 dp_from[step + distance]
                                                        [plan_length +
-                                                        d_plan_length][u2 >> 1]
-                                                       [v2 >> 1] =
+                                                        d_plan_length][u2][v2] =
                                                            (distance - 1) << 3 |
                                                            (int)Direction::W;
                                             }
 
                                             // 回収する場合も直帰でいい
                                             if (target_info.flags &
-                                                mask_plan_length_1)
+                                                mask_plan_length_1) {
+                                                can_be_destination
+                                                    [(step + distance) % 2
+                                                         ? 121 + u2 * 10 + v2
+                                                         : u2 * 11 + v2] = true;
                                                 break;
+                                            }
                                         }
                                     } while (false);
                                 }
                             }
                         }
                     }
-
-                    // relative_position は 10 マス以内だけでいいか
-
-                    // 各マスについて、目的地たりえるか集計
-                    // TODO: 終点であることを確認してなかった…
-                    auto can_be_destination = array<bool, 224>();
-                    // 距離が偶数
-                    for (auto step = 2; step <= 21; step += 2)
-                        for (auto plan_length = 1;
-                             plan_length <= min(kMaxPlanLength, step);
-                             plan_length++)
-                            for (auto u = 0; u <= 10; u++)
-                                for (auto v = 0; v <= 10; v++) {
-                                    const auto y = ;
-                                    can_be_destination[u * 11 + v] |=
-                                        dp[step][plan_length][u][v] >= 0.0f;
-                                }
-                    // 距離が奇数
-                    for (auto step = 1; step <= 21; step += 2)
-                        for (auto plan_length = 1;
-                             plan_length <= min(kMaxPlanLength, step);
-                             plan_length++)
-                            for (auto u = 0; u <= 9; u++)
-                                for (auto v = 0; v <= 9; v++) {
-                                    //
-                                    can_be_destination[121 + u * 10 + v] |=
-                                        dp[step][plan_length][u][v] >= 0.0f;
-                                }
 
                     // 最初に目的地を決める
                     for (auto i = 0; i < 224; i++)
@@ -700,12 +703,8 @@ struct NNUEGreedyAgent : Agent {
 
                     // n_steps を、position から定まる可能なものから決める
                     auto n_steps_candidates = array<bool, 24>();
-                    const auto target_u = relative_position < 121
-                                              ? relative_position / 11
-                                              : (relative_position - 121) / 10;
-                    const auto target_v = relative_position < 121
-                                              ? relative_position & 11
-                                              : (relative_position - 121) % 11;
+                    const auto [target_u, target_v] =
+                        TranslatePosition221ToUV(relative_position);
                     for (auto step = relative_position < 121 ? 2 : 1;
                          step <= 21; step += 2)
                         for (auto plan_length = 1;
@@ -741,36 +740,35 @@ struct NNUEGreedyAgent : Agent {
                         cerr << "失敗しちゃったよ move" << endl;
                         continue;
                     }
-                    const auto min_quantized_n_ships =
-                        kNShipsQuantizationTable[min_n_ships];
-                    const auto max_quantized_n_ships =
-                        max_n_ships < (int)kNShipsQuantizationTable.size()
-                            ? kNShipsQuantizationTable[max_n_ships]
-                            : kNShipsQuantizationTable.back() + 1;
-
-                    for (auto i = 0; i < 32; i++)
-                        if (i < min_quantized_n_ships ||
-                            max_quantized_n_ships < i)
-                            n_ships_tensor[ab][i] = 1e-30f;
-                    auto quantized_n_ships = -100;
-                    nn::F::Argmax(n_ships_tensor[ab], quantized_n_ships);
-                    const auto n_ships = uniform_int_distribution<>(
-                        max((int)kDequantizationTable[quantized_n_ships],
-                            min_n_ships),
-                        min((int)kDequantizationTable[quantized_n_ships + 1],
-                            (int)max_n_ships))(rng);
+                    const auto n_ships = DetermineNShips(
+                        min_n_ships, max_n_ships, n_ships_tensor[ab]);
 
                     // もっとも良い plan_length をテーブルを走査して見つける
-                    // TODO
-                    auto target_plan_length = 0;
+                    auto best_plan_length = 0;
+                    auto best_score = -100.0f;
+                    for (auto plan_length = 1;
+                         plan_length <=
+                         Fleet::MaxFlightPlanLenForShipCount(n_ships);
+                         plan_length++) {
+                        const auto& score =
+                            dp[n_steps][plan_length][target_u][target_v];
+                        if (best_score < score) {
+                            best_score = score;
+                            best_plan_length = plan_length;
+                        }
+                    }
+                    if (best_plan_length == 0) {
+                        cerr << "失敗 2" << endl;
+                        continue;
+                    }
 
                     // 経路復元
-                    // 回収する場合は、戻る文字を残すようにする
+                    // 回収する場合は、戻る文字を残すようにする // TODO
                     auto flight_plan = string();
                     auto path_y = target_u + target_v + n_steps % 2;
                     auto path_x = target_v - target_u;
                     auto path_step = n_steps;
-                    auto path_plan_length = target_plan_length;
+                    auto path_plan_length = best_plan_length;
                     do {
                         const auto u = (path_y - path_x) >> 1;
                         const auto v = (path_y + path_x) >> 1;
@@ -813,10 +811,146 @@ struct NNUEGreedyAgent : Agent {
                                                     n_ships, flight_plan)));
                 }
             } break;
-            case 2:
-                break;
-            case 3:
-                break;
+            case 2: { // Attack
+                static auto n_ships_tensor =
+                    AttackDecoder::NShipsTensor<true>();
+                static auto relative_position_tensor =
+                    AttackDecoder::RelativePositionTensor<true>();
+                static auto direction_tensor =
+                    AttackDecoder::DirectionTensor<true>();
+                attack_decoder.Forward(
+                    action_batch_size, action_decoder_in_tensor, n_ships_tensor,
+                    relative_position_tensor, direction_tensor);
+
+                // shipyard ごとに処理
+                for (auto ab = 0; ab < action_batch_size; ab++) {
+                    const auto shipyard_id = action_shipyard_ids[ab];
+                    const auto& shipyard = state.shipyards_.at(shipyard_id);
+                    const auto mask_opponent =
+                        shipyard.player_id_ == 0
+                            ? NNUEFeature::kPlayer1Shipyard |
+                                  NNUEFeature::kPlayer1Fleet |
+                                  NNUEFeature::kPlayer1FleetAdjacent
+                            : NNUEFeature::kPlayer0Shipyard |
+                                  NNUEFeature::kPlayer0Fleet |
+                                  NNUEFeature::kPlayer0FleetAdjacent;
+
+                    // 最初に目標位置を決める
+                    // 10 マス以内の敵関連のマス
+                    for (auto dy = -10; dy <= 10; dy++) {
+                        for (auto dx = -10 + abs(dy); dx <= 10 - abs(dy);
+                             dx++) {
+                            const auto y = normalize(shipyard.position_.y + dy);
+                            const auto x = normalize(shipyard.position_.x + dx);
+                            if ((dy != 0 || dx != 0) &&
+                                (features.future_info[abs(y) + abs(x)][{y, x}]
+                                     .flags &
+                                 mask_opponent))
+                                continue;
+                            const auto u = (10 + y - x) >> 1;
+                            const auto v = (10 + y + x) >> 1;
+                            const auto idx_relative_position =
+                                ((y ^ x) & 1) ? 121 + u * 10 + v : u * 11 + v;
+                            relative_position_tensor[ab]
+                                                    [idx_relative_position] =
+                                                        -1e30f;
+                        }
+                    }
+
+                    auto target_position = 0;
+                    nn::F::Argmax(relative_position_tensor[ab],
+                                  target_position);
+                    if (relative_position_tensor[ab][target_position] <=
+                        -1e30f) {
+                        cerr << "失敗 attack" << endl;
+                        continue;
+                    }
+                    const auto [target_y, target_x] =
+                        TranslatePosition221ToYX(target_position);
+
+                    // 初手の方向を決める
+                    if (target_y >= 0)
+                        direction_tensor[ab][0] = -1e30f;
+                    if (target_x <= 0)
+                        direction_tensor[ab][1] = -1e30f;
+                    if (target_y <= 0)
+                        direction_tensor[ab][2] = -1e30f;
+                    if (target_x >= 0)
+                        direction_tensor[ab][3] = -1e30f;
+                    auto best_direction = 0;
+                    nn::F::Argmax(direction_tensor[ab], best_direction);
+
+                    // 艦数を決める
+                    const auto min_n_ships = 21;
+                    const auto max_n_ships = shipyard.ship_count_;
+                    const auto n_ships = DetermineNShips(
+                        min_n_ships, max_n_ships, n_ships_tensor[ab]);
+
+                    // 航路を決める
+                    const auto flight_plan =
+                        DetermineFlightPlan(target_y, target_x, best_direction);
+
+                    // TODO: 経路に障害物がないか検証
+
+                    result.actions.insert(make_pair(
+                        shipyard_id, ShipyardAction(ShipyardActionType::kLaunch,
+                                                    n_ships, flight_plan)));
+                }
+            } break;
+            case 3: { // Convert
+                static auto n_ships_tensor =
+                    ConvertDecoder::NShipsTensor<true>();
+                static auto relative_position_tensor =
+                    ConvertDecoder::RelativePositionTensor<true>();
+                static auto direction_tensor =
+                    ConvertDecoder::DirectionTensor<true>();
+                convert_decoder.Forward(
+                    action_batch_size, action_decoder_in_tensor, n_ships_tensor,
+                    relative_position_tensor, direction_tensor);
+
+                // shipyard ごとに処理
+                for (auto ab = 0; ab < action_batch_size; ab++) {
+                    const auto shipyard_id = action_shipyard_ids[ab];
+                    const auto& shipyard = state.shipyards_.at(shipyard_id);
+
+                    // 最初に目標を定める
+                    auto target_position = 0;
+                    nn::F::Argmax(relative_position_tensor[ab],
+                                  target_position);
+                    const auto [target_y, target_x] =
+                        TranslatePosition221ToYX(target_position);
+
+                    // 初手の方向を決める
+                    if (target_y >= 0)
+                        direction_tensor[ab][0] = -1e30f;
+                    if (target_x <= 0)
+                        direction_tensor[ab][1] = -1e30f;
+                    if (target_y <= 0)
+                        direction_tensor[ab][2] = -1e30f;
+                    if (target_x >= 0)
+                        direction_tensor[ab][3] = -1e30f;
+                    auto best_direction = 0;
+                    nn::F::Argmax(direction_tensor[ab], best_direction);
+
+                    // 艦数を決める
+                    const auto min_n_ships = 0;
+                    const auto max_n_ships = shipyard.ship_count_ - 50;
+                    const auto n_ships =
+                        DetermineNShips(min_n_ships, max_n_ships,
+                                        n_ships_tensor[ab]) +
+                        50;
+
+                    // 航路を決める
+                    const auto flight_plan = DetermineFlightPlan<true>(
+                        target_y, target_x, best_direction);
+
+                    // TODO: 経路に障害物がないか検証
+
+                    result.actions.insert(make_pair(
+                        shipyard_id, ShipyardAction(ShipyardActionType::kLaunch,
+                                                    n_ships, flight_plan)));
+                }
+            } break;
             }
         }
 
@@ -824,7 +958,106 @@ struct NNUEGreedyAgent : Agent {
 
         (void)mean_value;
 
-        return Action();
+        return result;
+    }
+
+    int DetermineNShips(const int min_n_ships, const int max_n_ships,
+                        nn::TensorSlice<float, 32>&& t) const {
+        const auto min_quantized_n_ships =
+            kNShipsQuantizationTable[min_n_ships];
+        const auto max_quantized_n_ships =
+            max_n_ships < (int)kNShipsQuantizationTable.size()
+                ? kNShipsQuantizationTable[max_n_ships]
+                : kNShipsQuantizationTable.back() + 1;
+
+        for (auto i = 0; i < 32; i++)
+            if (i < min_quantized_n_ships || max_quantized_n_ships < i)
+                t[i] = 1e-30f;
+        auto quantized_n_ships = -100;
+        nn::F::Argmax(t, quantized_n_ships);
+        const auto n_ships = uniform_int_distribution<>(
+            max((int)kDequantizationTable[quantized_n_ships], min_n_ships),
+            min((int)kDequantizationTable[quantized_n_ships + 1],
+                (int)max_n_ships))(rng);
+        return n_ships;
+    }
+
+    // 行って戻ってくる
+    template <bool convert_type = false>
+    string DetermineFlightPlan(int target_y, int target_x,
+                               int first_direction) const {
+        auto flight_plan = string();
+        auto flight_plan_last = 'a';
+        auto remaining_y = target_y;
+        auto remaining_x = target_x;
+        switch (first_direction) {
+        case 0:
+            flight_plan += 'N';
+            if (target_y < -1)
+                flight_plan += to_string(-1 - target_y);
+            remaining_y = 0;
+            flight_plan_last = 'S';
+            break;
+        case 1:
+            flight_plan += 'E';
+            if (target_x > 1)
+                flight_plan += to_string(target_x - 1);
+            remaining_x = 0;
+            flight_plan_last = 'W';
+            break;
+        case 2:
+            flight_plan += 'S';
+            if (target_y > 1)
+                flight_plan += to_string(target_y - 1);
+            remaining_y = 0;
+            flight_plan_last = 'N';
+            break;
+        case 3:
+            flight_plan += 'W';
+            if (target_x < -1)
+                flight_plan += to_string(-1 - target_x);
+            remaining_x = 0;
+            flight_plan_last = 'E';
+            break;
+        }
+        if (remaining_y < 0) {
+            flight_plan += 'N';
+            if (remaining_y < -1)
+                flight_plan += to_string(-1 - remaining_y);
+            if (!convert_type) {
+                flight_plan += 'S';
+                flight_plan += flight_plan[flight_plan.size() - 2];
+            }
+        } else if (remaining_x > 0) {
+            flight_plan += 'E';
+            if (remaining_x > 1)
+                flight_plan += to_string(remaining_x - 1);
+            if (!convert_type) {
+                flight_plan += 'W';
+                flight_plan += flight_plan[flight_plan.size() - 2];
+            }
+        } else if (remaining_y > 0) {
+            flight_plan += 'S';
+            if (remaining_y > 1)
+                flight_plan += to_string(remaining_y - 1);
+            if (!convert_type) {
+                flight_plan += 'N';
+                flight_plan += flight_plan[flight_plan.size() - 2];
+            }
+        } else if (remaining_x < 0) {
+            flight_plan += 'W';
+            if (remaining_x < -1)
+                flight_plan += to_string(-1 - remaining_x);
+            if (!convert_type) {
+                flight_plan += 'E';
+                flight_plan += flight_plan[flight_plan.size() - 2];
+            }
+        }
+        if (convert_type)
+            flight_plan += 'C';
+        else
+            flight_plan += flight_plan_last;
+        return flight_plan;
     }
 
     auto SampleAction() {

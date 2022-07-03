@@ -1651,6 +1651,7 @@ int main() {
 #endif
 
 // TODO: PyTorch dump
-// TODO: 推論結果から手への変換
-// TODO: DP で一番稼げる手を探す
+// TODO: 推論結果から手への変換の確認
+// TODO: エージェントの python 拡張化
 // TODO: MCTS
+// 撃墜できるなら撃墜するみたいなヒューリスティック入れたい
