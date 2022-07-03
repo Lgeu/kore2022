@@ -106,9 +106,10 @@ static auto CharToDirection(const char c) {
     abort();
 }
 
-static Point GetColRow(const int pos) {
-    return {(Point::value_type)(pos / kSize), (Point::value_type)(pos % kSize)};
-}
+// static Point GetColRow(const int pos) {
+//     return {(Point::value_type)(pos / kSize), (Point::value_type)(pos %
+//     kSize)};
+// }
 
 static Point GetToPos(const Point v, const Direction direction) {
     switch (direction) {
@@ -463,6 +464,7 @@ struct State {
     }
 
     void Print() const {
+        auto initial_precision = cout.precision();
         cout << fixed << setprecision(1);
         const auto player_colors = array<int, 2>{5, 6};
         cout << kResetTextStyle;
@@ -547,7 +549,8 @@ struct State {
             }
             cout << endl;
         }
-        cout << kResetTextStyle << defaultfloat;
+        cout << kResetTextStyle << defaultfloat
+             << setprecision(initial_precision);
     }
 
     auto Same(const State& rhs) const {
@@ -1651,7 +1654,9 @@ int main() {
 #endif
 
 // TODO: PyTorch dump
+// - あとは確認
 // TODO: 推論結果から手への変換の確認
+// - 棋譜を読み込んで予測付きで dump するような感じ
 // TODO: エージェントの python 拡張化
 // TODO: MCTS
 // 撃墜できるなら撃墜するみたいなヒューリスティック入れたい

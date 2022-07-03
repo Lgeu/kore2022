@@ -15,6 +15,19 @@ void sgemm_(const char* transa, const char* transb, const int* m, const int* n,
             const int* ldC);
 }
 
+inline auto TranslatePosition221ToUV(const int p) {
+    const auto u = p < 121 ? p / 11 : (p - 121) / 10;
+    const auto v = p < 121 ? p % 11 : (p - 121) % 11;
+    return make_pair(u, v);
+}
+
+inline auto TranslatePosition221ToYX(const int p) {
+    const auto [u, v] = TranslatePosition221ToUV(p);
+    const auto y = u + v - (p < 121 ? 10 : 9);
+    const auto x = v - u - 10;
+    return make_pair(y, x);
+}
+
 template <int in_features, int out_features> struct BatchLinear {
     // パラメータ
     nn::TensorBuffer<float, out_features, in_features> weight;
@@ -47,6 +60,24 @@ template <int in_features, int out_features> struct BatchLinear {
     }
 };
 
+void ReadRelativePositionDecoderParameters(
+    BatchLinear<256, 224>& relative_position_decoder, FILE* const f) {
+    static auto raw_weight = nn::TensorBuffer<float, 448, 256>();
+    static auto raw_bias = nn::TensorBuffer<float, 448>();
+    raw_weight.FromFile(f);
+    raw_bias.FromFile(f);
+    for (auto i = 0; i < 221; i++) {
+        auto [y, x] = TranslatePosition221ToYX(i);
+        if (y < 0)
+            y += kSize;
+        if (x < 0)
+            x += kSize;
+        const auto yx = y * kSize + x;
+        relative_position_decoder.weight[i] = raw_weight[yx];
+        relative_position_decoder.bias[i] = raw_bias[yx];
+    }
+}
+
 static constexpr auto kMaxBatchSize = 100;
 
 struct SpawnDecoder {
@@ -59,18 +90,19 @@ struct SpawnDecoder {
     using NShipsTensor =
         nn::Tensor<float, nn::Shape<kMaxBatchSize, 12>, has_buffer>;
 
+    // パラメータ読み込み
+    void ReadParameters(FILE* const f) { n_ships_decoder.ReadParameters(f); }
+
     template <bool in_has_buffer, bool out_has_buffer>
     void Forward(const int batch_size, const InTensor<in_has_buffer>& input,
                  NShipsTensor<out_has_buffer>& out_n_ships) const {
         n_ships_decoder.Forward(batch_size, input.Data(), out_n_ships.Data());
     }
-
-    // デクオンタイズ、サンプリングもここでやる？微妙
 };
 
 struct MoveDecoder {
     BatchLinear<256, 32> n_ships_decoder;
-    BatchLinear<256, 448> relative_position_decoder;
+    BatchLinear<256, 224> relative_position_decoder;
     BatchLinear<256, 24> n_steps_decoder; // [1, 21]
 
     template <bool has_buffer>
@@ -85,6 +117,13 @@ struct MoveDecoder {
     template <bool has_buffer>
     using NStepsTensor =
         nn::Tensor<float, nn::Shape<kMaxBatchSize, 24>, has_buffer>;
+
+    // パラメータ読み込み
+    void ReadParameters(FILE* const f) {
+        n_ships_decoder.ReadParameters(f);
+        ReadRelativePositionDecoderParameters(relative_position_decoder, f);
+        n_steps_decoder.ReadParameters(f);
+    }
 
     template <bool in_has_buffer, bool n_ships_has_buffer,
               bool relative_position_has_buffer, bool n_steps_has_buffer>
@@ -102,7 +141,7 @@ struct MoveDecoder {
 
 struct AttackDecoder {
     BatchLinear<256, 32> n_ships_decoder;
-    BatchLinear<256, 448> relative_position_decoder;
+    BatchLinear<256, 224> relative_position_decoder;
     BatchLinear<256, 4> direction_decoder;
 
     template <bool has_buffer>
@@ -117,6 +156,13 @@ struct AttackDecoder {
     template <bool has_buffer>
     using DirectionTensor =
         nn::Tensor<float, nn::Shape<kMaxBatchSize, 4>, has_buffer>;
+
+    // パラメータ読み込み
+    void ReadParameters(FILE* const f) {
+        n_ships_decoder.ReadParameters(f);
+        ReadRelativePositionDecoderParameters(relative_position_decoder, f);
+        direction_decoder.ReadParameters(f);
+    }
 
     template <bool in_has_buffer, bool n_ships_has_buffer,
               bool relative_position_has_buffer, bool direction_has_buffer>
@@ -140,18 +186,21 @@ struct ConvertDecoder : AttackDecoder {
 };
 
 struct NNUE {
-    // vector で持つよりはこっちのほうがいいはず
-
-    // static constexpr auto kNGlobalFeatures = 9;
-    // static constexpr auto kNShipyardFeatures = 10; // 嘘
-
     // 重み
     BatchLinear<NNUEFeature::kNGlobalFeatures, 256> global_feature_encoder;
     nn::EmbeddingBag<NNUEFeature::kNFeatureTypes + 1, 256> embedding;
     BatchLinear<256, 256> fc1, fc2;
     BatchLinear<256, 1> value_decoder;
     BatchLinear<256, 4> type_decoder;
-    // この後のも Batch で処理したほうが良さそう
+
+    void ReadParameters(FILE* const f) {
+        global_feature_encoder.ReadParameters(f);
+        embedding.ReadParameters(f);
+        fc1.ReadParameters(f);
+        fc2.ReadParameters(f);
+        value_decoder.ReadParameters(f);
+        type_decoder.ReadParameters(f);
+    }
 
     template <bool has_buffer>
     using ShipyardFeatureTensor =
@@ -219,18 +268,6 @@ struct NNUE {
 
 struct ActionSampler {};
 
-inline auto TranslatePosition221ToUV(const int p) {
-    const auto u = p < 121 ? p / 11 : (p - 121) / 10;
-    const auto v = p < 121 ? p % 11 : (p - 121) % 11;
-    return make_pair(u, v);
-}
-inline auto TranslatePosition221ToYX(const int p) {
-    const auto [u, v] = TranslatePosition221ToUV(p);
-    const auto y = u + v - (p < 121 ? 10 : 9);
-    const auto x = v - u - 10;
-    return make_pair(y, x);
-}
-
 struct NNUEGreedyAgent : Agent {
     NNUE nnue;
     SpawnDecoder spawn_decoder;
@@ -238,18 +275,36 @@ struct NNUEGreedyAgent : Agent {
     AttackDecoder attack_decoder;
     ConvertDecoder convert_decoder;
 
-    Action ComputeNextMove(const State& state, const PlayerId = -1) const {
-        static auto global_feature_tensor = NNUE::GlobalFeatureTensor<true>();
-        static auto shipyard_feature_tensor =
-            NNUE::ShipyardFeatureTensor<true>();
-        static auto value_tensor = NNUE::OutValueTensor<true>();
-        static auto action_type_tensor = NNUE::OutActionTypeTensor<true>();
-        static auto code_tensor = NNUE::OutCodeTensor<true>();
+    void ReadParameters(FILE* const f) {
+        nnue.ReadParameters(f);
+        spawn_decoder.ReadParameters(f);
+        move_decoder.ReadParameters(f);
+        attack_decoder.ReadParameters(f);
+        convert_decoder.ReadParameters(f);
+    }
 
-        // 特徴抽出
-        const auto features = NNUEFeature(state);
+    void ReadParameters(const string& filename) {
+        const auto f = fopen(filename.c_str(), "rb");
+        if (f == NULL) {
+            cerr << filename << " を開けないよ" << endl;
+            abort();
+        }
+        ReadParameters(f);
+        if (!(getc(f) == EOF && feof(f))) {
+            cerr << "読み込むファイルが大きすぎるよ" << endl;
+            abort();
+        }
+        fclose(f);
+    }
 
-        // 特徴を NN に入れる形に変形
+    NNUEGreedyAgent(const string parameters_filename) {
+        ReadParameters(parameters_filename);
+    }
+
+    inline auto FeatureToTensor(
+        const NNUEFeature& features,
+        NNUE::ShipyardFeatureTensor<true>& shipyard_feature_tensor,
+        NNUE::GlobalFeatureTensor<true>& global_feature_tensor) const {
         auto shipyard_ids = array<ShipyardId, kMaxBatchSize>();
         auto batch_size = 0;
         for (PlayerId player_id = 0; player_id < 2; player_id++) {
@@ -269,8 +324,10 @@ struct NNUEGreedyAgent : Agent {
                     shipyard_feature_tensor[batch_size][idx_feature] = -100;
 
                 static_assert(
-                    is_same_v<float,
-                              decltype(global_feature_tensor)::value_type>);
+                    is_same_v<
+                        float,
+                        remove_reference_t<
+                            decltype(global_feature_tensor)>::value_type>);
                 static_assert(
                     is_same_v<
                         float,
@@ -283,6 +340,23 @@ struct NNUEGreedyAgent : Agent {
                 batch_size++;
             }
         }
+        return make_pair(batch_size, shipyard_ids);
+    }
+
+    Action ComputeNextMove(const State& state, const PlayerId = -1) const {
+        static auto global_feature_tensor = NNUE::GlobalFeatureTensor<true>();
+        static auto shipyard_feature_tensor =
+            NNUE::ShipyardFeatureTensor<true>();
+        static auto value_tensor = NNUE::OutValueTensor<true>();
+        static auto action_type_tensor = NNUE::OutActionTypeTensor<true>();
+        static auto code_tensor = NNUE::OutCodeTensor<true>();
+
+        // 特徴抽出
+        const auto features = NNUEFeature(state);
+
+        // 特徴を NN に入れる形に変形
+        const auto [batch_size, shipyard_ids] = FeatureToTensor(
+            features, shipyard_feature_tensor, global_feature_tensor);
         assert(batch_size == (int)state.shipyards_.size());
         assert(batch_size == (int)(state.players_[0].shipyard_ids_.size() +
                                    state.players_[1].shipyard_ids_.size()));
@@ -786,24 +860,24 @@ struct NNUEGreedyAgent : Agent {
                         assert(path_step > 0);
                         const auto number = number_direction >> 3;
                         if (number_direction)
-                            flight_plan += to_string(number_direction);
+                            flight_plan += to_string(number);
                         flight_plan += "NESW"[direction];
                         switch ((Direction)direction) {
                         case Direction::N:
-                            path_y += 1 + number_direction;
+                            path_y += 1 + number;
                             break;
                         case Direction::E:
-                            path_x -= 1 + number_direction;
+                            path_x -= 1 + number;
                             break;
                         case Direction::S:
-                            path_y -= 1 + number_direction;
+                            path_y -= 1 + number;
                             break;
                         case Direction::W:
-                            path_x += 1 + number_direction;
+                            path_x += 1 + number;
                             break;
                         }
-                        path_step -= 1 + number_direction;
-                        path_plan_length -= number_direction == 0 ? 1 : 2;
+                        path_step -= 1 + number;
+                        path_plan_length -= number == 0 ? 1 : 2;
                     } while (true);
                     reverse(flight_plan.begin(), flight_plan.end());
                     result.actions.insert(make_pair(
@@ -1081,18 +1155,132 @@ struct NNUEMCTSAgent : Agent {
     }
 };
 
-void TestNNUE() {
-    static auto s = NNUE::ShipyardFeatureTensor<true>();
-    static auto g = NNUE::GlobalFeatureTensor<true>();
-    static auto v = NNUE::OutValueTensor<true>();
-    static auto t = NNUE::OutActionTypeTensor<true>();
-    static auto c = NNUE::OutCodeTensor<true>();
-    static auto nnue = NNUE();
+#include <fstream>
 
-    // TODO: パラメータ読み込み
-    nnue.Forward(10, s, g, v, t, c);
+static void TestNNUE() {
+
+    const auto kif_filename = string("36385265.kif");
+
+    const auto parameter_filename = string("parameters.bin");
+    // const auto step = 50;
+    // const auto shipyard_id = 0;
+
+    static auto shipyard_feature_tensor = NNUE::ShipyardFeatureTensor<true>();
+    static auto global_feature_tensor = NNUE::GlobalFeatureTensor<true>();
+    static auto value_tensor = NNUE::OutValueTensor<true>();
+    static auto type_tensor = NNUE::OutActionTypeTensor<true>();
+    static auto code_tensor = NNUE::OutCodeTensor<true>();
+    static auto agent = NNUEGreedyAgent(parameter_filename);
+
+    // ==============================
+    auto is = ifstream(kif_filename);
+    if (!is) {
+        throw runtime_error(string("ファイル ") + kif_filename +
+                            string("を開けなかったよ"));
+    }
+    KifHeader().Read(is);
+
+    // 罫線を読み捨てる
+    string line;
+    is >> line; // "==="
+
+    // 0 ターン目の行動を読み捨てる
+    int zero0, zero1;
+    is >> zero0 >> zero1;
+
+    struct NNUEData {
+        vector<int> shipyard_feature_;
+        array<float, NNUEFeature::kNGlobalFeatures> global_feature_;
+        ActionTarget target_;
+        PlayerId player_id_;
+    };
+
+    auto data = vector<NNUEData>();
+
+    while (true) {
+        // 状態を読み取る
+        const auto state = State().Read(is);
+
+        is >> line; // "---"
+        if (line[0] == '=')
+            break;
+
+        // 行動を読み取る
+        const auto action = Action().Read(state.shipyard_id_mapper_, is);
+
+        // 接戦なら特徴抽出
+        const auto approx_scores = state.ComputeApproxScore();
+        if (state.step_ < 100 ||
+            max(approx_scores[0], approx_scores[1]) <
+                3.0 * min(approx_scores[0], approx_scores[1])) {
+
+            const auto features = NNUEFeature(state);
+
+            const auto [batch_size, shipyard_ids] = agent.FeatureToTensor(
+                features, shipyard_feature_tensor, global_feature_tensor);
+            assert(batch_size == (int)state.shipyards_.size());
+            assert(batch_size == (int)(state.players_[0].shipyard_ids_.size() +
+                                       state.players_[1].shipyard_ids_.size()));
+
+            agent.nnue.Forward(batch_size, shipyard_feature_tensor,
+                               global_feature_tensor, value_tensor, type_tensor,
+                               code_tensor);
+            cout << "--- State ---" << endl;
+            state.Print();
+            cout << "--- Features ---" << endl;
+            cout << "global features:" << endl;
+            for (auto i = 0; i < 2; i++) {
+                for (const auto v : features.global_features[i])
+                    cout << v << " ";
+                cout << endl;
+            }
+            cout << "shipyard features:" << endl;
+            for (auto i = 0; i < 2; i++) {
+                for (const auto& [shipyard_id, feats] :
+                     features.shipyard_features[i]) {
+                    for (const auto v : feats)
+                        cout << v << " ";
+                    cout << endl;
+                }
+            }
+            cout << "--- Predictions ---" << endl;
+            cout << "value:" << endl;
+            for (auto b = 0; b < batch_size; b++)
+                cout << value_tensor[b] << " ";
+            cout << endl;
+
+            cout << "type:" << endl;
+            for (auto b = 0; b < batch_size; b++) {
+                cout << shipyard_ids[b] << endl;
+                for (const auto& v : type_tensor[b])
+                    cout << v << " ";
+                cout << endl;
+            }
+            cout << endl;
+
+            cout << endl;
+
+            if (state.step_ >= 50)
+                return;
+
+            for (const auto& [shipyard_id, shipyard_action] : action.actions) {
+                const auto action_target =
+                    ActionTarget(state, shipyard_id, shipyard_action);
+                if (action_target.action_target_type == ActionTargetType::kNull)
+                    continue;
+                const auto shipyard = state.shipyards_.at(shipyard_id);
+
+                data.push_back(
+                    {features.shipyard_features[shipyard.player_id_].at(
+                         shipyard_id),
+                     features.global_features[shipyard.player_id_],
+                     action_target, shipyard.player_id_});
+            }
+        }
+    }
 }
 
-// int main() {
-//     //
-// }
+int main() {
+    //
+    TestNNUE();
+}
