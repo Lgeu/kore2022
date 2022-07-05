@@ -17,14 +17,14 @@ void sgemm_(const char* transa, const char* transb, const int* m, const int* n,
 
 inline auto TranslatePosition221ToUV(const int p) {
     const auto u = p < 121 ? p / 11 : (p - 121) / 10;
-    const auto v = p < 121 ? p % 11 : (p - 121) % 11;
+    const auto v = p < 121 ? p % 11 : (p - 121) % 10;
     return make_pair(u, v);
 }
 
 inline auto TranslatePosition221ToYX(const int p) {
     const auto [u, v] = TranslatePosition221ToUV(p);
     const auto y = u + v - (p < 121 ? 10 : 9);
-    const auto x = v - u - 10;
+    const auto x = v - u;
     return make_pair(y, x);
 }
 
