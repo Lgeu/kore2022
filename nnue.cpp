@@ -1387,9 +1387,9 @@ static void TestPrediction(const string kif_filename,
                 cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
                      << ")" << endl;
                 const auto top_indices =
-                    get_top_n(move_n_ships_tensor[b], top_n);
+                    get_top_n(move_n_steps_tensor[b], top_n);
                 for (const auto i : top_indices) {
-                    cout << i << "(" << move_n_ships_tensor[b][i] << ") ";
+                    cout << i << "(" << move_n_steps_tensor[b][i] << ") ";
                 }
                 cout << endl;
             }
@@ -1479,7 +1479,7 @@ static void TestPrediction(const string kif_filename,
             }
             cout << endl;
 
-            if (state.step_ >= 115)
+            if (state.step_ >= 10)
                 return;
 
             for (const auto& [shipyard_id, shipyard_action] : action.actions) {
