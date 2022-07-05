@@ -521,6 +521,7 @@ struct NNUEGreedyAgent : Agent {
                                         0b111;
 
                                     // North y-, u-, v-
+                                    auto cumulative_kore = k;
                                     do {
                                         if (last_direction == (int)Direction::N)
                                             break;
@@ -549,7 +550,7 @@ struct NNUEGreedyAgent : Agent {
 
                                             const auto u2 = (u - distance) >> 1;
                                             const auto v2 = (v - distance) >> 1;
-                                            const auto gain = target_info.kore;
+                                            cumulative_kore += target_info.kore;
                                             const auto d_plan_length =
                                                 distance == 1 ||
                                                         (target_info.flags &
@@ -561,8 +562,8 @@ struct NNUEGreedyAgent : Agent {
                                                 dp[step + distance]
                                                   [plan_length + d_plan_length]
                                                   [u2][v2];
-                                            if (k2 < k + gain) {
-                                                k2 = k + gain;
+                                            if (k2 < cumulative_kore) {
+                                                k2 = cumulative_kore;
                                                 dp_from[step + distance]
                                                        [plan_length +
                                                         d_plan_length][u2][v2] =
@@ -582,6 +583,7 @@ struct NNUEGreedyAgent : Agent {
                                         }
                                     } while (false);
                                     // East x+, u-, v+
+                                    cumulative_kore = k;
                                     do {
                                         if (last_direction == (int)Direction::E)
                                             break;
@@ -610,7 +612,7 @@ struct NNUEGreedyAgent : Agent {
 
                                             const auto u2 = (u - distance) >> 1;
                                             const auto v2 = (v + distance) >> 1;
-                                            const auto gain = target_info.kore;
+                                            cumulative_kore += target_info.kore;
                                             const auto d_plan_length =
                                                 distance == 1 ||
                                                         (target_info.flags &
@@ -622,8 +624,8 @@ struct NNUEGreedyAgent : Agent {
                                                 dp[step + distance]
                                                   [plan_length + d_plan_length]
                                                   [u2][v2];
-                                            if (k2 < k + gain) {
-                                                k2 = k + gain;
+                                            if (k2 < cumulative_kore) {
+                                                k2 = cumulative_kore;
                                                 dp_from[step + distance]
                                                        [plan_length +
                                                         d_plan_length][u2][v2] =
@@ -643,6 +645,7 @@ struct NNUEGreedyAgent : Agent {
                                         }
                                     } while (false);
                                     // South y+, u+, v+
+                                    cumulative_kore = k;
                                     do {
                                         if (last_direction == (int)Direction::S)
                                             break;
@@ -671,7 +674,7 @@ struct NNUEGreedyAgent : Agent {
 
                                             const auto u2 = (u + distance) >> 1;
                                             const auto v2 = (v + distance) >> 1;
-                                            const auto gain = target_info.kore;
+                                            cumulative_kore += target_info.kore;
                                             const auto d_plan_length =
                                                 distance == 1 ||
                                                         (target_info.flags &
@@ -683,8 +686,8 @@ struct NNUEGreedyAgent : Agent {
                                                 dp[step + distance]
                                                   [plan_length + d_plan_length]
                                                   [u2][v2];
-                                            if (k2 < k + gain) {
-                                                k2 = k + gain;
+                                            if (k2 < cumulative_kore) {
+                                                k2 = cumulative_kore;
                                                 dp_from[step + distance]
                                                        [plan_length +
                                                         d_plan_length][u2][v2] =
@@ -704,6 +707,7 @@ struct NNUEGreedyAgent : Agent {
                                         }
                                     } while (false);
                                     // West x-, u+, v-
+                                    cumulative_kore = k;
                                     do {
                                         if (last_direction == (int)Direction::W)
                                             break;
@@ -733,7 +737,7 @@ struct NNUEGreedyAgent : Agent {
 
                                             const auto u2 = (u + distance) >> 1;
                                             const auto v2 = (v - distance) >> 1;
-                                            const auto gain = target_info.kore;
+                                            cumulative_kore += target_info.kore;
                                             const auto d_plan_length =
                                                 distance == 1 ||
                                                         (target_info.flags &
@@ -745,8 +749,8 @@ struct NNUEGreedyAgent : Agent {
                                                 dp[step + distance]
                                                   [plan_length + d_plan_length]
                                                   [u2][v2];
-                                            if (k2 < k + gain) {
-                                                k2 = k + gain;
+                                            if (k2 < cumulative_kore) {
+                                                k2 = cumulative_kore;
                                                 dp_from[step + distance]
                                                        [plan_length +
                                                         d_plan_length][u2][v2] =
@@ -884,6 +888,8 @@ struct NNUEGreedyAgent : Agent {
                         path_plan_length -= number == 0 ? 1 : 2;
                     } while (true);
                     reverse(flight_plan.begin(), flight_plan.end());
+                    if ('0' <= flight_plan.back() && flight_plan.back() <= '9')
+                        flight_plan.pop_back();
                     result.actions.insert(make_pair(
                         shipyard_id, ShipyardAction(ShipyardActionType::kLaunch,
                                                     n_ships, flight_plan)));
