@@ -483,6 +483,7 @@ struct NNUEGreedyAgent : Agent {
                                   NNUEFeature::kPlayer1Fleet;
 
                     fill((float*)dp.begin(), (float*)dp.end(), -1e30f);
+                    fill((char*)dp_from.begin(), (char*)dp_from.end(), 255);
 
                     dp[0][0][5][5] = 0.0f;
                     // 下 3 ビットで、0-3 が N-W 、7 が None
@@ -506,7 +507,7 @@ struct NNUEGreedyAgent : Agent {
                                     const auto dy = ((u + v) >> 1) - 10;
                                     const auto y =
                                         normalize(shipyard.position_.y + dy);
-                                    const auto dx = ((v - u) >> 1) - 10;
+                                    const auto dx = ((v - u) >> 1);
                                     const auto x =
                                         normalize(shipyard.position_.x + dx);
                                     if (features.future_info[step][{y, x}]
@@ -808,6 +809,7 @@ struct NNUEGreedyAgent : Agent {
                                     0, 1, 2, 3, 5, 8, 13, 21, 34, 55,
                                 };
                             min_n_ships = mapping[plan_length];
+                            break;
                         }
                     }
                     const auto max_n_ships = shipyard.ship_count_;
@@ -841,13 +843,13 @@ struct NNUEGreedyAgent : Agent {
                     // 経路復元
                     // 回収する場合は、戻る文字を残すようにする // TODO
                     auto flight_plan = string();
-                    auto path_y = target_u + target_v + n_steps % 2;
+                    auto path_y = target_u + target_v + n_steps % 2 - 10;
                     auto path_x = target_v - target_u;
                     auto path_step = n_steps;
                     auto path_plan_length = best_plan_length;
                     do {
-                        const auto u = (path_y - path_x) >> 1;
-                        const auto v = (path_y + path_x) >> 1;
+                        const auto u = (10 + path_y - path_x) >> 1;
+                        const auto v = (10 + path_y + path_x) >> 1;
                         assert(dp[path_step][path_plan_length][u][v] >= 0.0f);
                         const auto number_direction =
                             dp_from[path_step][path_plan_length][u][v];
@@ -861,7 +863,7 @@ struct NNUEGreedyAgent : Agent {
                         }
                         assert(path_step > 0);
                         const auto number = number_direction >> 3;
-                        if (number_direction)
+                        if (number)
                             flight_plan += to_string(number);
                         flight_plan += "NESW"[direction];
                         switch ((Direction)direction) {
@@ -1293,6 +1295,14 @@ static void TestPrediction(const string kif_filename,
                     cout << endl;
                 }
             }
+            cout << kTextBold << "--- Predicted actions ---" << kResetTextStyle
+                 << endl;
+            const auto predicted_actions = agent.ComputeNextMove(state);
+            for (const auto& [shipyard_id, shipyard_action] :
+                 predicted_actions.actions) {
+                cout << shipyard_id << ": " << shipyard_action.Str() << endl;
+            }
+
             cout << kTextBold << "--- Predictions ---" << kResetTextStyle
                  << endl;
             cout << "-- value --" << endl;
