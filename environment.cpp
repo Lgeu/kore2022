@@ -1653,8 +1653,6 @@ int main() {
 // clang-format on
 #endif
 
-// TODO: PyTorch dump
-// - あとは確認
 // TODO: 推論結果から手への変換の確認
 // - 棋譜を読み込んで予測付きで dump するような感じ
 // TODO: エージェントの python 拡張化

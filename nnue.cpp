@@ -1,5 +1,6 @@
 #include "../marathon/nn.cpp"
 #include "environment.cpp"
+#include <algorithm>
 #include <limits>
 #include <random>
 #include <string>
@@ -244,9 +245,6 @@ struct NNUE {
         static auto x2 = nn::TensorBuffer<float, kMaxBatchSize, 256>();
         global_feature_encoder.Forward(batch_size, global_feature_tensor.Data(),
                                        x2.Data());
-
-        x2[0].Print(); //===============
-        x2[1].Print();
         for (auto b = 0; b < batch_size; b++)
             x1[b] += x2[b];
 
@@ -1142,6 +1140,21 @@ struct NNUEGreedyAgent : Agent {
         // TODO
     }
 };
+
+struct MCTSShipyardAction {
+    // ハッシュが同じ行動なら探索を深める
+    // 基本的に艦数をまとめるくらいで良い？
+    // 子の数にも制限を設ける
+
+    // convert の位置とかもまとめたい感じはある
+
+    unsigned long long hash;
+};
+
+struct MCTSAction {
+    unsigned long long hash;
+};
+
 struct NNUEMCTSAgent : Agent {
     NNUE nnue;
     SpawnDecoder spawn_decoder;
@@ -1161,19 +1174,40 @@ struct NNUEMCTSAgent : Agent {
 
 #include <fstream>
 
-static void TestNNUE() {
-
-    const auto kif_filename = string("36385265.kif");
-
-    const auto parameter_filename = string("parameters.bin");
-    // const auto step = 50;
-    // const auto shipyard_id = 0;
-
+static void TestPrediction(const string kif_filename,
+                           const string parameter_filename) {
     static auto shipyard_feature_tensor = NNUE::ShipyardFeatureTensor<true>();
     static auto global_feature_tensor = NNUE::GlobalFeatureTensor<true>();
     static auto value_tensor = NNUE::OutValueTensor<true>();
     static auto type_tensor = NNUE::OutActionTypeTensor<true>();
     static auto code_tensor = NNUE::OutCodeTensor<true>();
+
+    static auto spawn_n_ships_tensor = SpawnDecoder::NShipsTensor<true>();
+    static auto move_n_ships_tensor = MoveDecoder::NShipsTensor<true>();
+    static auto move_relative_position_tensor =
+        MoveDecoder::RelativePositionTensor<true>();
+    static auto move_n_steps_tensor = MoveDecoder::NStepsTensor<true>();
+    static auto attack_n_ships_tensor = AttackDecoder::NShipsTensor<true>();
+    static auto attack_relative_position_tensor =
+        AttackDecoder::RelativePositionTensor<true>();
+    static auto attack_direction_tensor =
+        AttackDecoder::DirectionTensor<true>();
+    static auto convert_n_ships_tensor = ConvertDecoder::NShipsTensor<true>();
+    static auto convert_relative_position_tensor =
+        ConvertDecoder::RelativePositionTensor<true>();
+    static auto convert_direction_tensor =
+        ConvertDecoder::DirectionTensor<true>();
+    spawn_n_ships_tensor.Fill_(-1e30f);
+    move_n_ships_tensor.Fill_(-1e30f);
+    move_relative_position_tensor.Fill_(-1e30f);
+    move_n_steps_tensor.Fill_(-1e30f);
+    attack_n_ships_tensor.Fill_(-1e30f);
+    attack_relative_position_tensor.Fill_(-1e30f);
+    attack_direction_tensor.Fill_(-1e30f);
+    convert_n_ships_tensor.Fill_(-1e30f);
+    convert_relative_position_tensor.Fill_(-1e30f);
+    convert_direction_tensor.Fill_(-1e30f);
+
     static auto agent = NNUEGreedyAgent(parameter_filename);
 
     // ==============================
@@ -1229,16 +1263,28 @@ static void TestNNUE() {
             agent.nnue.Forward(batch_size, shipyard_feature_tensor,
                                global_feature_tensor, value_tensor, type_tensor,
                                code_tensor);
-            cout << "--- State ---" << endl;
+            agent.spawn_decoder.Forward(batch_size, code_tensor,
+                                        spawn_n_ships_tensor);
+            agent.move_decoder.Forward(
+                batch_size, code_tensor, move_n_ships_tensor,
+                move_relative_position_tensor, move_n_steps_tensor);
+            agent.attack_decoder.Forward(
+                batch_size, code_tensor, attack_n_ships_tensor,
+                attack_relative_position_tensor, attack_direction_tensor);
+            agent.convert_decoder.Forward(
+                batch_size, code_tensor, convert_n_ships_tensor,
+                convert_relative_position_tensor, convert_direction_tensor);
+
+            cout << kTextBold << "--- State ---" << kResetTextStyle << endl;
             state.Print();
-            cout << "--- Features ---" << endl;
-            cout << "global features:" << endl;
+            cout << kTextBold << "--- Features ---" << kResetTextStyle << endl;
+            cout << "-- global features --" << endl;
             for (auto i = 0; i < 2; i++) {
                 for (const auto v : features.global_features[i])
                     cout << v << " ";
                 cout << endl;
             }
-            cout << "shipyard features:" << endl;
+            cout << "-- shipyard features --" << endl;
             for (auto i = 0; i < 2; i++) {
                 for (const auto& [shipyard_id, feats] :
                      features.shipyard_features[i]) {
@@ -1247,27 +1293,177 @@ static void TestNNUE() {
                     cout << endl;
                 }
             }
-            cout << "--- Predictions ---" << endl;
-            cout << "value:" << endl;
+            cout << kTextBold << "--- Predictions ---" << kResetTextStyle
+                 << endl;
+            cout << "-- value --" << endl;
             for (auto b = 0; b < batch_size; b++)
                 cout << value_tensor[b] << " ";
             cout << endl;
 
-            cout << "type:" << endl;
+            cout << "-- type --" << endl;
             for (auto b = 0; b < batch_size; b++) {
-                cout << shipyard_ids[b] << endl;
+                const auto p = state.shipyards_.at(shipyard_ids[b]).position_;
+                cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
+                     << ")" << endl;
                 for (const auto& v : type_tensor[b])
                     cout << v << " ";
                 cout << endl;
             }
             cout << endl;
 
-            for (auto i = 0; i < 5; i++)
-                cout << global_feature_tensor[2][i] << " ";
-            cout << endl;
+            const auto get_top_n = [](const auto& tensor, const int n) {
+                auto result = vector<int>(tensor.size());
+                iota(result.begin(), result.end(), 0);
+                partial_sort(result.begin(),
+                             result.begin() + min((int)result.size(), n),
+                             result.end(), [&](const int l, const int r) {
+                                 return tensor[l] > tensor[r];
+                             });
+                result.resize(min((int)result.size(), n));
+                return result;
+            };
+
+            const auto top_n = 5;
+            cout << "-- spawn n_ships --" << endl;
+            for (auto b = 0; b < batch_size; b++) {
+                const auto p = state.shipyards_.at(shipyard_ids[b]).position_;
+                cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
+                     << ")" << endl;
+                const auto top_indices =
+                    get_top_n(spawn_n_ships_tensor[b], top_n);
+                for (const auto i : top_indices) {
+                    cout << i << "(" << spawn_n_ships_tensor[b][i] << ") ";
+                }
+                cout << endl;
+            }
+            cout << "-- move n_ships --" << endl;
+            for (auto b = 0; b < batch_size; b++) {
+                const auto p = state.shipyards_.at(shipyard_ids[b]).position_;
+                cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
+                     << ")" << endl;
+                const auto top_indices =
+                    get_top_n(move_n_ships_tensor[b], top_n);
+                for (const auto i : top_indices) {
+                    const auto l = kDequantizationTable[i];
+                    const auto r = kDequantizationTable[i + 1];
+                    cout << "[" << l << "," << r - 1 << "]("
+                         << move_n_ships_tensor[b][i] << ") ";
+                }
+                cout << endl;
+            }
+            cout << "-- move relative_position --" << endl;
+            for (auto b = 0; b < batch_size; b++) {
+                const auto p = state.shipyards_.at(shipyard_ids[b]).position_;
+                cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
+                     << ")" << endl;
+                const auto top_indices =
+                    get_top_n(move_relative_position_tensor[b], top_n);
+                for (const auto i : top_indices) {
+                    const auto [y, x] = TranslatePosition221ToYX(i);
+                    cout << y << "," << x << "("
+                         << move_relative_position_tensor[b][i] << ") ";
+                }
+                cout << endl;
+            }
+            cout << "-- move n_steps --" << endl;
+            for (auto b = 0; b < batch_size; b++) {
+                const auto p = state.shipyards_.at(shipyard_ids[b]).position_;
+                cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
+                     << ")" << endl;
+                const auto top_indices =
+                    get_top_n(move_n_ships_tensor[b], top_n);
+                for (const auto i : top_indices) {
+                    cout << i << "(" << move_n_ships_tensor[b][i] << ") ";
+                }
+                cout << endl;
+            }
+            cout << "-- attack n_ships --" << endl;
+            for (auto b = 0; b < batch_size; b++) {
+                const auto p = state.shipyards_.at(shipyard_ids[b]).position_;
+                cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
+                     << ")" << endl;
+                const auto top_indices =
+                    get_top_n(attack_n_ships_tensor[b], top_n);
+                for (const auto i : top_indices) {
+                    const auto l = kDequantizationTable[i];
+                    const auto r = kDequantizationTable[i + 1];
+                    cout << "[" << l << "," << r - 1 << "]("
+                         << attack_n_ships_tensor[b][i] << ") ";
+                }
+                cout << endl;
+            }
+            cout << "-- attack relative_position --" << endl;
+            for (auto b = 0; b < batch_size; b++) {
+                const auto p = state.shipyards_.at(shipyard_ids[b]).position_;
+                cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
+                     << ")" << endl;
+                const auto top_indices =
+                    get_top_n(attack_relative_position_tensor[b], top_n);
+                for (const auto i : top_indices) {
+                    const auto [y, x] = TranslatePosition221ToYX(i);
+                    cout << y << "," << x << "("
+                         << attack_relative_position_tensor[b][i] << ") ";
+                }
+                cout << endl;
+            }
+            cout << "-- attack direction --" << endl;
+            for (auto b = 0; b < batch_size; b++) {
+                const auto p = state.shipyards_.at(shipyard_ids[b]).position_;
+                cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
+                     << ")" << endl;
+                const auto top_indices =
+                    get_top_n(attack_direction_tensor[b], top_n);
+                for (const auto i : top_indices) {
+                    cout << "NESW"[i] << "(" << attack_direction_tensor[b][i]
+                         << ") ";
+                }
+                cout << endl;
+            }
+            cout << "-- convert n_ships --" << endl;
+            for (auto b = 0; b < batch_size; b++) {
+                const auto p = state.shipyards_.at(shipyard_ids[b]).position_;
+                cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
+                     << ")" << endl;
+                const auto top_indices =
+                    get_top_n(convert_n_ships_tensor[b], top_n);
+                for (const auto i : top_indices) {
+                    const auto l = kDequantizationTable[i];
+                    const auto r = kDequantizationTable[i + 1];
+                    cout << "[" << 50 + l << "," << 50 + r - 1 << "]("
+                         << convert_n_ships_tensor[b][i] << ") ";
+                }
+                cout << endl;
+            }
+            cout << "-- convert relative_position --" << endl;
+            for (auto b = 0; b < batch_size; b++) {
+                const auto p = state.shipyards_.at(shipyard_ids[b]).position_;
+                cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
+                     << ")" << endl;
+                const auto top_indices =
+                    get_top_n(convert_relative_position_tensor[b], top_n);
+                for (const auto i : top_indices) {
+                    const auto [y, x] = TranslatePosition221ToYX(i);
+                    cout << y << "," << x << "("
+                         << convert_relative_position_tensor[b][i] << ") ";
+                }
+                cout << endl;
+            }
+            cout << "-- convert direction --" << endl;
+            for (auto b = 0; b < batch_size; b++) {
+                const auto p = state.shipyards_.at(shipyard_ids[b]).position_;
+                cout << shipyard_ids[b] << " (" << (int)p.y << "," << (int)p.x
+                     << ")" << endl;
+                const auto top_indices =
+                    get_top_n(convert_direction_tensor[b], top_n);
+                for (const auto i : top_indices) {
+                    cout << "NESW"[i] << "(" << convert_direction_tensor[b][i]
+                         << ") ";
+                }
+                cout << endl;
+            }
             cout << endl;
 
-            if (state.step_ >= 150)
+            if (state.step_ >= 115)
                 return;
 
             for (const auto& [shipyard_id, shipyard_action] : action.actions) {
@@ -1289,7 +1485,8 @@ static void TestNNUE() {
 
 int main() {
     //
-    TestNNUE();
+    TestPrediction("36385265.kif", "parameters.bin");
 }
-
-// 相手のが狂うのはなぜ？
+// clang-format off
+// clang++ nnue.cpp -std=c++17 -Wall -Wextra -march=native -l:libblas.so.3 -fsanitize=address -g
+// clang-format on
