@@ -1,15 +1,28 @@
 #include <boost/python/numpy.hpp>
 
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 
 #include "environment.cpp"
+#include "nnue.cpp"
 
 namespace p = boost::python;
 namespace np = boost::python::numpy;
 
 template <typename T, typename... S> auto NpEmpty(const S... shape) {
     return np::empty(p::make_tuple(shape...), np::dtype::get_builtin<T>());
+}
+
+auto greedy_agent = NNUEGreedyAgent("parameters_01340000.bin");
+
+auto ComputeNextMove(const string& state_string) {
+    auto is = istringstream(state_string);
+    const auto state = State().Read(is);
+    const auto action = greedy_agent.ComputeNextMove(state);
+    auto os = ostringstream();
+    action.Write(state.shipyard_id_mapper_, os);
+    return string(os.str());
 }
 
 auto MakeNNUEFeature(const string& filename) {
@@ -272,6 +285,7 @@ BOOST_PYTHON_MODULE(kore_extension) {
     np::initialize();
     p::def("make_feature", MakeFeature);
     p::def("make_nnue_feature", MakeNNUEFeature);
+    p::def("compute_next_move", ComputeNextMove);
 }
 
 #ifdef TEST_KORE_EXTENSION
