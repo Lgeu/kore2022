@@ -419,7 +419,7 @@ struct NNUEGreedyAgent : Agent {
                             player_spawn_capacities[shipyard.player_id_]);
 
                     for (auto i = max_spawn + 1; i < 12; i++)
-                        n_ships_tensor[ab][i] = numeric_limits<float>::min();
+                        n_ships_tensor[ab][i] = -1e30f;
                     auto n_ships = 0;
                     // spawn に関しては quantize の前後が同じ
                     nn::F::Argmax(n_ships_tensor[ab], n_ships);
@@ -918,6 +918,8 @@ struct NNUEGreedyAgent : Agent {
                 for (auto ab = 0; ab < action_batch_size; ab++) {
                     const auto shipyard_id = action_shipyard_ids[ab];
                     const auto& shipyard = state.shipyards_.at(shipyard_id);
+                    if (shipyard.ship_count_ <= 1)
+                        continue;
                     const auto mask_opponent =
                         shipyard.player_id_ == 0
                             ? NNUEFeature::kPlayer1Shipyard |
@@ -1504,8 +1506,8 @@ static void TestPrediction(const string kif_filename,
             }
             cout << endl;
 
-            if (state.step_ >= 120)
-                return;
+            // if (state.step_ >= 200)
+            //     return;
 
             for (const auto& [shipyard_id, shipyard_action] : action.actions) {
                 const auto action_target =
