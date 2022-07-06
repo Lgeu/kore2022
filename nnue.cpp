@@ -819,6 +819,12 @@ struct NNUEGreedyAgent : Agent {
                     const auto max_n_ships = shipyard.ship_count_;
                     if (min_n_ships > max_n_ships) {
                         // 失敗処理はこれでいいのか？
+                        cerr << "min_n_ships=" << min_n_ships
+                             << " max_n_ships=" << max_n_ships << endl;
+
+                        cerr << "n_steps=" << n_steps
+                             << " relative_position:" << relative_position
+                             << endl;
                         cerr << "失敗しちゃったよ move" << endl;
                         continue;
                     }
@@ -929,19 +935,22 @@ struct NNUEGreedyAgent : Agent {
                             const auto y = normalize(shipyard.position_.y + dy);
                             const auto x = normalize(shipyard.position_.x + dx);
                             if ((dy != 0 || dx != 0) &&
-                                (features.future_info[abs(y) + abs(x)][{y, x}]
+                                (features.future_info[abs(dy) + abs(dx)][{y, x}]
                                      .flags &
                                  mask_opponent))
                                 continue;
-                            const auto u = (10 + y - x) >> 1;
-                            const auto v = (10 + y + x) >> 1;
+                            const auto u = (10 + dy - dx) >> 1;
+                            const auto v = (10 + dy + dx) >> 1;
                             const auto idx_relative_position =
-                                ((y ^ x) & 1) ? 121 + u * 10 + v : u * 11 + v;
+                                ((dy ^ dx) & 1) ? 121 + u * 10 + v : u * 11 + v;
                             relative_position_tensor[ab]
                                                     [idx_relative_position] =
                                                         -1e30f;
                         }
                     }
+                    relative_position_tensor[ab][221] =
+                        relative_position_tensor[ab][222] =
+                            relative_position_tensor[ab][223] = -1e30f;
 
                     auto target_position = 0;
                     nn::F::Argmax(relative_position_tensor[ab],
@@ -951,32 +960,40 @@ struct NNUEGreedyAgent : Agent {
                         cerr << "失敗 attack" << endl;
                         continue;
                     }
-                    const auto [target_y, target_x] =
+                    const auto [target_dy_positive, target_dx_positive] =
                         TranslatePosition221ToYX(target_position);
+                    const auto target_dy = target_dy_positive <= kSize / 2
+                                               ? target_dy_positive
+                                               : target_dy_positive - kSize;
+                    const auto target_dx = target_dx_positive <= kSize / 2
+                                               ? target_dx_positive
+                                               : target_dx_positive - kSize;
 
                     // 初手の方向を決める
-                    if (target_y >= 0)
+                    if (target_dy >= 0)
                         direction_tensor[ab][0] = -1e30f;
-                    if (target_x <= 0)
+                    if (target_dx <= 0)
                         direction_tensor[ab][1] = -1e30f;
-                    if (target_y <= 0)
+                    if (target_dy <= 0)
                         direction_tensor[ab][2] = -1e30f;
-                    if (target_x >= 0)
+                    if (target_dx >= 0)
                         direction_tensor[ab][3] = -1e30f;
                     auto best_direction = 0;
                     nn::F::Argmax(direction_tensor[ab], best_direction);
 
                     // 艦数を決める
-                    const auto min_n_ships = 21;
+                    const auto min_n_ships = min(21, (int)shipyard.ship_count_);
                     const auto max_n_ships = shipyard.ship_count_;
                     const auto n_ships = DetermineNShips(
                         min_n_ships, max_n_ships, n_ships_tensor[ab]);
 
                     // 航路を決める
-                    const auto flight_plan =
-                        DetermineFlightPlan(target_y, target_x, best_direction);
+                    const auto flight_plan = DetermineFlightPlan(
+                        target_dy, target_dx, best_direction);
 
                     // TODO: 経路に障害物がないか検証
+                    cerr << "attack flight_plan:" << endl;
+                    cerr << flight_plan << endl;
 
                     result.actions.insert(make_pair(
                         shipyard_id, ShipyardAction(ShipyardActionType::kLaunch,
@@ -999,21 +1016,31 @@ struct NNUEGreedyAgent : Agent {
                     const auto shipyard_id = action_shipyard_ids[ab];
                     const auto& shipyard = state.shipyards_.at(shipyard_id);
 
+                    relative_position_tensor[ab][221] =
+                        relative_position_tensor[ab][222] =
+                            relative_position_tensor[ab][223] = -1e30f;
+
                     // 最初に目標を定める
                     auto target_position = 0;
                     nn::F::Argmax(relative_position_tensor[ab],
                                   target_position);
-                    const auto [target_y, target_x] =
+                    const auto [target_dy_positive, target_dx_positive] =
                         TranslatePosition221ToYX(target_position);
+                    const auto target_dy = target_dy_positive <= kSize / 2
+                                               ? target_dy_positive
+                                               : target_dy_positive - kSize;
+                    const auto target_dx = target_dx_positive <= kSize / 2
+                                               ? target_dx_positive
+                                               : target_dx_positive - kSize;
 
                     // 初手の方向を決める
-                    if (target_y >= 0)
+                    if (target_dy >= 0)
                         direction_tensor[ab][0] = -1e30f;
-                    if (target_x <= 0)
+                    if (target_dx <= 0)
                         direction_tensor[ab][1] = -1e30f;
-                    if (target_y <= 0)
+                    if (target_dy <= 0)
                         direction_tensor[ab][2] = -1e30f;
-                    if (target_x >= 0)
+                    if (target_dx >= 0)
                         direction_tensor[ab][3] = -1e30f;
                     auto best_direction = 0;
                     nn::F::Argmax(direction_tensor[ab], best_direction);
@@ -1028,9 +1055,11 @@ struct NNUEGreedyAgent : Agent {
 
                     // 航路を決める
                     const auto flight_plan = DetermineFlightPlan<true>(
-                        target_y, target_x, best_direction);
+                        target_dy, target_dx, best_direction);
 
                     // TODO: 経路に障害物がないか検証
+                    cerr << "convert flight_plan:" << endl;
+                    cerr << flight_plan << endl;
 
                     result.actions.insert(make_pair(
                         shipyard_id, ShipyardAction(ShipyardActionType::kLaunch,
@@ -1056,7 +1085,7 @@ struct NNUEGreedyAgent : Agent {
 
         for (auto i = 0; i < 32; i++)
             if (i < min_quantized_n_ships || max_quantized_n_ships < i)
-                t[i] = 1e-30f;
+                t[i] = -1e30f;
         auto quantized_n_ships = -100;
         nn::F::Argmax(t, quantized_n_ships);
         const auto n_ships = uniform_int_distribution<>(
@@ -1110,7 +1139,8 @@ struct NNUEGreedyAgent : Agent {
                 flight_plan += to_string(-1 - remaining_y);
             if (!convert_type) {
                 flight_plan += 'S';
-                flight_plan += flight_plan[flight_plan.size() - 2];
+                if (remaining_y < -1)
+                    flight_plan += to_string(-1 - remaining_y);
             }
         } else if (remaining_x > 0) {
             flight_plan += 'E';
@@ -1118,7 +1148,8 @@ struct NNUEGreedyAgent : Agent {
                 flight_plan += to_string(remaining_x - 1);
             if (!convert_type) {
                 flight_plan += 'W';
-                flight_plan += flight_plan[flight_plan.size() - 2];
+                if (remaining_x > 1)
+                    flight_plan += to_string(remaining_x - 1);
             }
         } else if (remaining_y > 0) {
             flight_plan += 'S';
@@ -1126,7 +1157,8 @@ struct NNUEGreedyAgent : Agent {
                 flight_plan += to_string(remaining_y - 1);
             if (!convert_type) {
                 flight_plan += 'N';
-                flight_plan += flight_plan[flight_plan.size() - 2];
+                if (remaining_y > 1)
+                    flight_plan += to_string(remaining_y - 1);
             }
         } else if (remaining_x < 0) {
             flight_plan += 'W';
@@ -1134,7 +1166,8 @@ struct NNUEGreedyAgent : Agent {
                 flight_plan += to_string(-1 - remaining_x);
             if (!convert_type) {
                 flight_plan += 'E';
-                flight_plan += flight_plan[flight_plan.size() - 2];
+                if (remaining_x < -1)
+                    flight_plan += to_string(-1 - remaining_x);
             }
         }
         if (convert_type)
@@ -1471,7 +1504,7 @@ static void TestPrediction(const string kif_filename,
             }
             cout << endl;
 
-            if (state.step_ >= 10)
+            if (state.step_ >= 120)
                 return;
 
             for (const auto& [shipyard_id, shipyard_action] : action.actions) {
@@ -1493,7 +1526,7 @@ static void TestPrediction(const string kif_filename,
 
 int main() {
     //
-    TestPrediction("36385265.kif", "parameters.bin");
+    TestPrediction("36385265.kif", "parameters_01340000.bin");
 }
 // clang-format off
 // clang++ nnue.cpp -std=c++17 -Wall -Wextra -march=native -l:libblas.so.3 -fsanitize=address -g
