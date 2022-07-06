@@ -14,7 +14,11 @@ template <typename T, typename... S> auto NpEmpty(const S... shape) {
     return np::empty(p::make_tuple(shape...), np::dtype::get_builtin<T>());
 }
 
-auto greedy_agent = NNUEGreedyAgent("parameters_01340000.bin");
+NNUEGreedyAgent greedy_agent;
+
+void LoadParameters(const string& parameters_filename) {
+    greedy_agent.ReadParameters(parameters_filename);
+}
 
 auto ComputeNextMove(const string& state_string) {
     auto is = istringstream(state_string);
@@ -285,6 +289,7 @@ BOOST_PYTHON_MODULE(kore_extension) {
     np::initialize();
     p::def("make_feature", MakeFeature);
     p::def("make_nnue_feature", MakeNNUEFeature);
+    p::def("load_parameters", LoadParameters);
     p::def("compute_next_move", ComputeNextMove);
 }
 

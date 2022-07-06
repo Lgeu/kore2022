@@ -288,16 +288,17 @@ struct NNUEGreedyAgent : Agent {
     void ReadParameters(const string& filename) {
         const auto f = fopen(filename.c_str(), "rb");
         if (f == NULL) {
-            cerr << filename << " を開けないよ" << endl;
-            abort();
+            throw runtime_error(filename + string(" を開けないよ"));
         }
+
         ReadParameters(f);
         if (!(getc(f) == EOF && feof(f))) {
-            cerr << "読み込むファイルが大きすぎるよ" << endl;
-            abort();
+            throw runtime_error("読み込むファイルが大きすぎるよ");
         }
         fclose(f);
     }
+
+    NNUEGreedyAgent() = default;
 
     NNUEGreedyAgent(const string parameters_filename) {
         ReadParameters(parameters_filename);
