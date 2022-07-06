@@ -1204,27 +1204,7 @@ struct NNUEFeature {
              FeatureInfo());
 
         // fleet
-        for (auto i = 0; i <= kFutureSteps; i++) {
-            for (const auto& [_, center_shipyard] : state.shipyards_) {
-
-                for (const auto& [_, fleet] : state_i.fleets_) {
-                    const auto relative_point =
-                        Relative(fleet.position_ - center_shipyard.position_);
-                    if (relative_point.l1_norm() > i + 1)
-                        continue;
-                    const auto away =
-                        fleet.player_id_ != center_shipyard.player_id_;
-
-                    const auto feature =
-                        (PointTimeToIndex(relative_point, i) * 2 + away) *
-                            kFleetResolution +
-                        QuantizeNShips(fleet.ship_count_);
-                    shipyard_features[center_shipyard.player_id_]
-                                     [center_shipyard.id_]
-                                         .push_back(feature);
-                }
-            }
-
+        for (auto i = 0; i <= 21; i++) {
             // future_info に書き込む
             for (const auto& [_, fleet] : state_i.fleets_) {
                 const auto& p = fleet.position_;
@@ -1252,6 +1232,29 @@ struct NNUEFeature {
             for (auto y = 0; y < kSize; y++)
                 for (auto x = 0; x < kSize; x++)
                     future_info[i][{y, x}].kore = state_i.board_[{y, x}].kore_;
+            if (i > kFutureSteps)
+                continue;
+
+            // shipyard feature
+            for (const auto& [_, center_shipyard] : state.shipyards_) {
+
+                for (const auto& [_, fleet] : state_i.fleets_) {
+                    const auto relative_point =
+                        Relative(fleet.position_ - center_shipyard.position_);
+                    if (relative_point.l1_norm() > i + 1)
+                        continue;
+                    const auto away =
+                        fleet.player_id_ != center_shipyard.player_id_;
+
+                    const auto feature =
+                        (PointTimeToIndex(relative_point, i) * 2 + away) *
+                            kFleetResolution +
+                        QuantizeNShips(fleet.ship_count_);
+                    shipyard_features[center_shipyard.player_id_]
+                                     [center_shipyard.id_]
+                                         .push_back(feature);
+                }
+            }
 
             // 次のターンへ
             auto action = SpawnAgent().ComputeNextMove(state_i, 0);

@@ -501,7 +501,7 @@ struct NNUEGreedyAgent : Agent {
                                 for (auto v = first_uv; v <= last_uv; v += 2) {
                                     const auto k =
                                         dp[step][plan_length][u >> 1][v >> 1];
-                                    if (k == -100.0f)
+                                    if (k < 0.0f)
                                         continue;
                                     // ここの u, v は 2 倍してあるので注意
                                     const auto dy = ((u + v) >> 1) - 10;
@@ -851,6 +851,7 @@ struct NNUEGreedyAgent : Agent {
                     auto path_x = target_v - target_u;
                     auto path_step = n_steps;
                     auto path_plan_length = best_plan_length;
+                    auto last_step = true; // 回収して戻る場合にはまた注意
                     do {
                         const auto u = (10 + path_y - path_x) >> 1;
                         const auto v = (10 + path_y + path_x) >> 1;
@@ -885,7 +886,8 @@ struct NNUEGreedyAgent : Agent {
                             break;
                         }
                         path_step -= 1 + number;
-                        path_plan_length -= number == 0 ? 1 : 2;
+                        path_plan_length -= number == 0 || last_step ? 1 : 2;
+                        last_step = false;
                     } while (true);
                     reverse(flight_plan.begin(), flight_plan.end());
                     if ('0' <= flight_plan.back() && flight_plan.back() <= '9')
