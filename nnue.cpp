@@ -521,13 +521,13 @@ struct NNUEGreedyAgent : Agent {
                                         0b111;
 
                                     // North y-, u-, v-
-                                    auto cumulative_kore = k;
                                     do {
                                         if (last_direction == (int)Direction::N)
                                             break;
                                         const auto max_distance = min(
                                             21 - step,
                                             10 - max(0, max(10 - u, 10 - v)));
+                                        auto cumulative_kore = k;
 
                                         for (auto distance = 1;
                                              distance <= max_distance;
@@ -583,13 +583,13 @@ struct NNUEGreedyAgent : Agent {
                                         }
                                     } while (false);
                                     // East x+, u-, v+
-                                    cumulative_kore = k;
                                     do {
                                         if (last_direction == (int)Direction::E)
                                             break;
                                         const auto max_distance = min(
                                             21 - step,
                                             10 - max(0, max(10 - u, v - 10)));
+                                        auto cumulative_kore = k;
 
                                         for (auto distance = 1;
                                              distance <= max_distance;
@@ -645,13 +645,13 @@ struct NNUEGreedyAgent : Agent {
                                         }
                                     } while (false);
                                     // South y+, u+, v+
-                                    cumulative_kore = k;
                                     do {
                                         if (last_direction == (int)Direction::S)
                                             break;
                                         const auto max_distance = min(
                                             21 - step,
                                             10 - max(0, max(u - 10, v - 10)));
+                                        auto cumulative_kore = k;
 
                                         for (auto distance = 1;
                                              distance <= max_distance;
@@ -707,13 +707,13 @@ struct NNUEGreedyAgent : Agent {
                                         }
                                     } while (false);
                                     // West x-, u+, v-
-                                    cumulative_kore = k;
                                     do {
                                         if (last_direction == (int)Direction::W)
                                             break;
                                         const auto max_distance = min(
                                             21 - step,
                                             10 - max(0, max(u - 10, 10 - v)));
+                                        auto cumulative_kore = k;
 
                                         for (auto distance = 1;
                                              distance <= max_distance;
@@ -1040,8 +1040,6 @@ struct NNUEGreedyAgent : Agent {
             }
         }
 
-        // TODO
-
         (void)mean_value;
 
         return result;
@@ -1145,10 +1143,6 @@ struct NNUEGreedyAgent : Agent {
             flight_plan += flight_plan_last;
         return flight_plan;
     }
-
-    auto SampleAction() {
-        // TODO
-    }
 };
 
 struct MCTSShipyardAction {
@@ -1175,10 +1169,6 @@ struct NNUEMCTSAgent : Agent {
     Action ComputeNextMove(const State& /*state*/, const PlayerId = -1) const {
         // TODO
         return Action();
-    }
-
-    auto SampleAction() {
-        // TODO
     }
 };
 
