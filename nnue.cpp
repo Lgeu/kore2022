@@ -268,7 +268,45 @@ struct NNUE {
     }
 };
 
-struct ActionSampler {};
+inline auto
+FeatureToTensor(const NNUEFeature& features,
+                NNUE::ShipyardFeatureTensor<true>& shipyard_feature_tensor,
+                NNUE::GlobalFeatureTensor<true>& global_feature_tensor,
+                array<ShipyardId, kMaxBatchSize>& shipyard_ids) {
+    auto batch_size = 0;
+    for (PlayerId player_id = 0; player_id < 2; player_id++) {
+        const auto& player_shipyard_features =
+            features.shipyard_features[player_id];
+        const auto& player_global_features =
+            features.global_features[player_id];
+        for (const auto& [shipyard_id, shipyard_feature] :
+             player_shipyard_features) {
+            shipyard_ids[batch_size] = shipyard_id;
+            auto idx_feature = 0;
+            for (; idx_feature < min(512, (int)shipyard_feature.size());
+                 idx_feature++)
+                shipyard_feature_tensor[batch_size][idx_feature] =
+                    shipyard_feature[idx_feature];
+            if (idx_feature != 512)
+                shipyard_feature_tensor[batch_size][idx_feature] = -100;
+
+            static_assert(
+                is_same_v<float,
+                          remove_reference_t<
+                              decltype(global_feature_tensor)>::value_type>);
+            static_assert(
+                is_same_v<float,
+                          remove_reference_t<
+                              decltype(player_global_features)>::value_type>);
+            memcpy(global_feature_tensor[batch_size].Data(),
+                   player_global_features.data(),
+                   sizeof(float) * NNUEFeature::kNGlobalFeatures);
+
+            batch_size++;
+        }
+    }
+    return batch_size;
+}
 
 struct NNUEGreedyAgent : Agent {
     NNUE nnue;
@@ -304,48 +342,6 @@ struct NNUEGreedyAgent : Agent {
         ReadParameters(parameters_filename);
     }
 
-    inline auto FeatureToTensor(
-        const NNUEFeature& features,
-        NNUE::ShipyardFeatureTensor<true>& shipyard_feature_tensor,
-        NNUE::GlobalFeatureTensor<true>& global_feature_tensor) const {
-        auto shipyard_ids = array<ShipyardId, kMaxBatchSize>();
-        auto batch_size = 0;
-        for (PlayerId player_id = 0; player_id < 2; player_id++) {
-            const auto& player_shipyard_features =
-                features.shipyard_features[player_id];
-            const auto& player_global_features =
-                features.global_features[player_id];
-            for (const auto& [shipyard_id, shipyard_feature] :
-                 player_shipyard_features) {
-                shipyard_ids[batch_size] = shipyard_id;
-                auto idx_feature = 0;
-                for (; idx_feature < min(512, (int)shipyard_feature.size());
-                     idx_feature++)
-                    shipyard_feature_tensor[batch_size][idx_feature] =
-                        shipyard_feature[idx_feature];
-                if (idx_feature != 512)
-                    shipyard_feature_tensor[batch_size][idx_feature] = -100;
-
-                static_assert(
-                    is_same_v<
-                        float,
-                        remove_reference_t<
-                            decltype(global_feature_tensor)>::value_type>);
-                static_assert(
-                    is_same_v<
-                        float,
-                        remove_reference_t<
-                            decltype(player_global_features)>::value_type>);
-                memcpy(global_feature_tensor[batch_size].Data(),
-                       player_global_features.data(),
-                       sizeof(float) * NNUEFeature::kNGlobalFeatures);
-
-                batch_size++;
-            }
-        }
-        return make_pair(batch_size, shipyard_ids);
-    }
-
     Action ComputeNextMove(const State& state, const PlayerId = -1) const {
         static auto global_feature_tensor = NNUE::GlobalFeatureTensor<true>();
         static auto shipyard_feature_tensor =
@@ -353,13 +349,15 @@ struct NNUEGreedyAgent : Agent {
         static auto value_tensor = NNUE::OutValueTensor<true>();
         static auto action_type_tensor = NNUE::OutActionTypeTensor<true>();
         static auto code_tensor = NNUE::OutCodeTensor<true>();
+        static auto shipyard_ids = array<ShipyardId, kMaxBatchSize>();
 
         // 特徴抽出
         const auto features = NNUEFeature(state);
 
         // 特徴を NN に入れる形に変形
-        const auto [batch_size, shipyard_ids] = FeatureToTensor(
-            features, shipyard_feature_tensor, global_feature_tensor);
+        const auto batch_size =
+            FeatureToTensor(features, shipyard_feature_tensor,
+                            global_feature_tensor, shipyard_ids);
         assert(batch_size == (int)state.shipyards_.size());
         assert(batch_size == (int)(state.players_[0].shipyard_ids_.size() +
                                    state.players_[1].shipyard_ids_.size()));
@@ -1188,11 +1186,146 @@ struct MCTSShipyardAction {
 
     // convert の位置とかもまとめたい感じはある
 
+    // この構造体いらんかも
+    // 行動を作る -> ハッシュを計算 -> ハッシュが存在していれば置き換える で
+
     unsigned long long hash;
 };
 
 struct MCTSAction {
-    unsigned long long hash;
+    unsigned long long hash_;
+    int node_index_; // action が適用されるノード
+    float worth_;    // 累積価値
+    int n_chosen_;
+    Action action_;
+};
+
+struct MCTSPairedAction {
+    unsigned long long hash_;
+    int next_node_index_;
+};
+
+struct MCTSNode {
+    State state_;
+    float value_;   // player 0 視点の状態評価値
+    int n_visited_; // 選ばれた回数
+    unordered_map<unsigned long long, MCTSAction> searched_actions_;
+
+    static constexpr auto kMaxNChildren = 12;
+    array<int, kMaxNChildren> child_nodes_indices;
+
+    static constexpr auto kMaxNNodes = 10000;
+    static int n_nodes_;
+    static array<MCTSNode, kMaxNNodes> nodes_buffer_;
+
+    static nn::TensorBuffer<float, kMaxNNodes * 8, 4> action_type_buffer;
+
+    // 10^8 bytes くらいあるのはちょっと大きすぎ？
+    static nn::TensorBuffer<float, kMaxNNodes * 8, 256> codes_buffer;
+    static int n_codes_;
+    int codes_offset;
+
+    // 各 shipyard の code 、DP テーブル、policy も持つ必要がある
+    // code は value と同時に計算されるので必ず存在する
+    // それ以外は改めて node を訪れたときに計算されるので、存在しないこともある
+    // 大きさが可変なのが厄介
+
+    // TODO
+
+    static void ResetStaticMembers() {
+        n_nodes_ = 0;
+        n_codes_ = 0;
+    }
+
+    MCTSNode(const State& state, const NNUE& nnue)
+        : state_(state), value_(), n_visited_(), searched_actions_(),
+          child_nodes_indices(), codes_offset(n_codes_) {
+        // value と code を計算する
+
+        static auto global_feature_tensor = NNUE::GlobalFeatureTensor<true>();
+        static auto shipyard_feature_tensor =
+            NNUE::ShipyardFeatureTensor<true>();
+        static auto value_tensor = NNUE::OutValueTensor<true>();
+        auto code_tensor = CodeTensor();
+        static auto shipyard_ids = array<ShipyardId, kMaxBatchSize>();
+        auto action_type_tensor = ActionTypeTensor();
+
+        // 特徴抽出
+        const auto features = NNUEFeature(state);
+
+        // 特徴を NN に入れる形に変形
+        const auto batch_size =
+            FeatureToTensor(features, shipyard_feature_tensor,
+                            global_feature_tensor, shipyard_ids);
+        assert(batch_size == (int)state.shipyards_.size());
+        assert(batch_size == (int)(state.players_[0].shipyard_ids_.size() +
+                                   state.players_[1].shipyard_ids_.size()));
+
+        // NN で推論
+        nnue.Forward(batch_size, shipyard_feature_tensor, global_feature_tensor,
+                     value_tensor, action_type_tensor, code_tensor);
+        n_codes_ += batch_size;
+
+        // value の集計
+        for (auto b = 0; b < batch_size; b++) {
+            if (b < (int)state.players_[0].shipyard_ids_.size())
+                value_ += value_tensor[b];
+            else
+                value_ -= value_tensor[b];
+
+            // 艦数が足りない行動は弾いておく
+            const auto& n_ships =
+                state.shipyards_.at(shipyard_ids[b]).ship_count_;
+            if (n_ships < 1)
+                action_type_tensor[b][1] = -1e30f;
+            if (n_ships < 2)
+                action_type_tensor[b][2] = -1e30f;
+            if (n_ships < kConvertCost)
+                action_type_tensor[b][3] = -1e30f;
+        }
+        value_ /= batch_size;
+    }
+
+    auto NShipyards() const { return (int)state_.shipyards_.size(); }
+
+    NNUE::OutActionTypeTensor<false> ActionTypeTensor() const {
+        return NNUE::OutActionTypeTensor<false>(
+            action_type_buffer[codes_offset].Data());
+    }
+
+    NNUE::OutCodeTensor<false> CodeTensor() const {
+        return NNUE::OutCodeTensor<false>(codes_buffer[codes_offset].Data());
+    }
+
+    auto Expand() {
+        // 通常と違って、1 手前で使う
+
+        // まず、code から行動を一定個数サンプルする
+
+        // 各 Action を具体的にしていく
+        auto player_spawn_capacities = array<int, 2>();
+        for (auto i = 0; i < 2; i++)
+            player_spawn_capacities[i] =
+                (int)(state_.players_[i].kore_ / kSpawnCost);
+
+        // その後、行動をひとつ選んで、子ノードを作り、value を計算する
+        // TODO
+    }
+
+    // state から、policy に基づいてランダムに行動をサンプルする
+    //
+    auto SampleMove() {
+
+        //
+    }
+
+    auto ChooseMove() {
+        //
+    }
+
+    inline auto UCTScore() const {
+        //
+    }
 };
 
 struct NNUEMCTSAgent : Agent {
@@ -1202,8 +1335,38 @@ struct NNUEMCTSAgent : Agent {
     AttackDecoder attack_decoder;
     ConvertDecoder convert_decoder;
 
-    Action ComputeNextMove(const State& /*state*/, const PlayerId = -1) const {
+    void ReadParameters(FILE* const f) {
+        nnue.ReadParameters(f);
+        spawn_decoder.ReadParameters(f);
+        move_decoder.ReadParameters(f);
+        attack_decoder.ReadParameters(f);
+        convert_decoder.ReadParameters(f);
+    }
+
+    void ReadParameters(const string& filename) {
+        const auto f = fopen(filename.c_str(), "rb");
+        if (f == NULL) {
+            throw runtime_error(filename + string(" を開けないよ"));
+        }
+
+        ReadParameters(f);
+        if (!(getc(f) == EOF && feof(f))) {
+            throw runtime_error("読み込むファイルが大きすぎるよ");
+        }
+        fclose(f);
+    }
+
+    Action ComputeNextMove(const State& state, const PlayerId = -1) const {
         // TODO
+        // とりあえずここで大枠を実装してしまうのが良さそう
+
+        MCTSNode::ResetStaticMembers();
+        MCTSNode::nodes_buffer_[0] = MCTSNode(state, nnue);
+
+        // あー、全部の行動列挙できないから、
+        // 最初に既知のノードを走査、その合計の確率が満たないなら
+        // 新しく行動をサンプリングする、という流れになるか？
+
         return Action();
     }
 };
@@ -1290,8 +1453,10 @@ static void TestPrediction(const string kif_filename,
 
             const auto features = NNUEFeature(state);
 
-            const auto [batch_size, shipyard_ids] = agent.FeatureToTensor(
-                features, shipyard_feature_tensor, global_feature_tensor);
+            static auto shipyard_ids = array<ShipyardId, kMaxBatchSize>();
+            const auto batch_size =
+                FeatureToTensor(features, shipyard_feature_tensor,
+                                global_feature_tensor, shipyard_ids);
             assert(batch_size == (int)state.shipyards_.size());
             assert(batch_size == (int)(state.players_[0].shipyard_ids_.size() +
                                        state.players_[1].shipyard_ids_.size()));
