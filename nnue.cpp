@@ -2229,6 +2229,8 @@ struct MCTSNode {
     }
 
     inline float UCTScore(const MCTSAction& action) const {
+        if (action.policy_ == 0.0f)
+            return 0.0f;
         const auto q = (1.0f + action.worth_) / (float)(1 + action.n_chosen_);
         static constexpr auto kPUCTCoef = 0.5f;
         const auto u = kPUCTCoef * action.policy_ * sqrt((float)n_visited_) /
