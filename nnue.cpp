@@ -2279,9 +2279,6 @@ struct NNUEMCTSAgent : Agent {
     }
 
     Action ComputeNextMove(const State& state, const PlayerId = -1) const {
-        // TODO
-        // とりあえずここで大枠を実装してしまうのが良さそう
-
         MCTSNode::ResetStaticMembers();
         auto& root_node = MCTSNode::nodes_buffer_[MCTSNode::n_nodes_++];
         root_node = MCTSNode(state, nnue);
@@ -2293,6 +2290,7 @@ struct NNUEMCTSAgent : Agent {
         auto path_node_indices = vector<PathInfo>();
 
         const auto t0 = Time();
+        auto iteration = 0;
 
         while (Time() - t0 < 2.9) {
             auto current_node_index = 0;
@@ -2320,7 +2318,6 @@ struct NNUEMCTSAgent : Agent {
                     action.Merge(action1);
                     MCTSNode::nodes_buffer_[child_node_index] =
                         MCTSNode(node.state_.Next(action), nnue);
-                    // TODO: バックトラック
                     // path_node_indices.push_back({child_node_index, {}});
                     current_node_index = child_node_index;
                     break;
@@ -2346,13 +2343,16 @@ struct NNUEMCTSAgent : Agent {
                 parent_node.candidate_actions_[1][action_indices[1]]
                     .n_chosen_++;
             }
+
+            iteration++;
         }
 
         // ログを吐きつつ行動を決定する
+        cerr << "iteration=" << iteration << endl;
         auto best_actions = array<Action, 2>();
         for (auto player_id = 0; player_id < 2; player_id++) {
             auto max_n_chosen = 0;
-            cout << "action,policy,n_chosen,mean_worth" << endl;
+            cerr << "action,policy,n_chosen,mean_worth" << endl;
             for (auto idx_action = 0; idx_action < MCTSNode::kMaxNChildren;
                  idx_action++) {
                 const auto& action =
@@ -2366,9 +2366,9 @@ struct NNUEMCTSAgent : Agent {
                 }
                 for (auto [shipyard_id, shipyard_action] :
                      action.action_.actions) {
-                    cout << shipyard_id << ":" << shipyard_action.Str() << ",";
+                    cerr << shipyard_id << ":" << shipyard_action.Str() << ",";
                 }
-                cout << action.policy_ << "," << action.n_chosen_ << ","
+                cerr << action.policy_ << "," << action.n_chosen_ << ","
                      << action.worth_ / action.n_chosen_ << endl;
             }
         }
@@ -2379,8 +2379,8 @@ struct NNUEMCTSAgent : Agent {
 
 #include <fstream>
 
-static void TestPrediction(const string kif_filename,
-                           const string parameter_filename) {
+[[maybe_unused]] static void TestPrediction(const string kif_filename,
+                                            const string parameter_filename) {
     static auto shipyard_feature_tensor = NNUE::ShipyardFeatureTensor<true>();
     static auto global_feature_tensor = NNUE::GlobalFeatureTensor<true>();
     static auto value_tensor = NNUE::OutValueTensor<true>();

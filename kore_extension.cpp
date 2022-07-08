@@ -14,21 +14,6 @@ template <typename T, typename... S> auto NpEmpty(const S... shape) {
     return np::empty(p::make_tuple(shape...), np::dtype::get_builtin<T>());
 }
 
-NNUEGreedyAgent greedy_agent;
-
-void LoadParameters(const string& parameters_filename) {
-    greedy_agent.ReadParameters(parameters_filename);
-}
-
-auto ComputeNextMove(const string& state_string) {
-    auto is = istringstream(state_string);
-    const auto state = State().Read(is);
-    const auto action = greedy_agent.ComputeNextMove(state);
-    auto os = ostringstream();
-    action.Write(state.shipyard_id_mapper_, os);
-    return string(os.str());
-}
-
 auto MakeNNUEFeature(const string& filename) {
     // TODO: フォーマットを考える
     constexpr auto kMaxNShipyardFeatures = 512;
@@ -289,8 +274,6 @@ BOOST_PYTHON_MODULE(kore_extension) {
     np::initialize();
     p::def("make_feature", MakeFeature);
     p::def("make_nnue_feature", MakeNNUEFeature);
-    p::def("load_parameters", LoadParameters);
-    p::def("compute_next_move", ComputeNextMove);
 }
 
 #ifdef TEST_KORE_EXTENSION
