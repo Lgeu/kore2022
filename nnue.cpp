@@ -9,6 +9,8 @@
 
 // バッチサイズが 1 じゃないので BLAS 的なもの使う必要がある
 
+static constexpr auto kEnablePredictionLogging = false;
+
 extern "C" {
 void sgemm_(const char* transa, const char* transb, const int* m, const int* n,
             const int* k, const float* alpha, const float* A, const int* ldA,
@@ -901,13 +903,15 @@ struct NNUEGreedyAgent : Agent {
                     const auto max_n_ships = shipyard.ship_count_;
                     if (min_n_ships > max_n_ships) {
                         // 失敗処理はこれでいいのか？
-                        cerr << "min_n_ships=" << min_n_ships
-                             << " max_n_ships=" << max_n_ships << endl;
+                        if (kEnablePredictionLogging) {
+                            cerr << "min_n_ships=" << min_n_ships
+                                 << " max_n_ships=" << max_n_ships << endl;
 
-                        cerr << "n_steps=" << n_steps
-                             << " relative_position:" << relative_position
-                             << endl;
-                        cerr << "失敗しちゃったよ move" << endl;
+                            cerr << "n_steps=" << n_steps
+                                 << " relative_position:" << relative_position
+                                 << endl;
+                            cerr << "失敗しちゃったよ move" << endl;
+                        }
                         continue;
                     }
                     const auto n_ships = DetermineNShips(
@@ -928,7 +932,9 @@ struct NNUEGreedyAgent : Agent {
                         }
                     }
                     if (best_plan_length == 0) {
-                        cerr << "失敗 2" << endl;
+                        if (kEnablePredictionLogging) {
+                            cerr << "失敗 2" << endl;
+                        }
                         continue;
                     }
 
@@ -1041,7 +1047,8 @@ struct NNUEGreedyAgent : Agent {
                                   target_position);
                     if (relative_position_tensor[ab][target_position] <=
                         -1e30f) {
-                        cerr << "失敗 attack" << endl;
+                        if (kEnablePredictionLogging)
+                            cerr << "失敗 attack" << endl;
                         continue;
                     }
                     const auto [target_dy_positive, target_dx_positive] =
@@ -1076,8 +1083,10 @@ struct NNUEGreedyAgent : Agent {
                         target_dy, target_dx, best_direction);
 
                     // TODO: 経路に障害物がないか検証
-                    cerr << "attack flight_plan:" << endl;
-                    cerr << flight_plan << endl;
+                    if (kEnablePredictionLogging) {
+                        cerr << "attack flight_plan:" << endl;
+                        cerr << flight_plan << endl;
+                    }
 
                     result.actions.insert(make_pair(
                         shipyard_id, ShipyardAction(ShipyardActionType::kLaunch,
@@ -1142,8 +1151,10 @@ struct NNUEGreedyAgent : Agent {
                         target_dy, target_dx, best_direction);
 
                     // TODO: 経路に障害物がないか検証
-                    cerr << "convert flight_plan:" << endl;
-                    cerr << flight_plan << endl;
+                    if (kEnablePredictionLogging) {
+                        cerr << "convert flight_plan:" << endl;
+                        cerr << flight_plan << endl;
+                    }
 
                     result.actions.insert(make_pair(
                         shipyard_id, ShipyardAction(ShipyardActionType::kLaunch,
@@ -1195,10 +1206,25 @@ struct MCTSShipyardAction {
 
 struct MCTSAction {
     unsigned hash_;
-    int node_index_; // action が適用されるノード
-    float worth_;    // 累積価値
-    int n_chosen_;
-    Action action_;
+    // int node_index_; // action が適用されるノード
+    float worth_;   // 累積価値、バックトラック時に更新
+    int n_chosen_;  // バックトラック時に更新
+    float policy_;  // オブジェクト生成時に更新
+    Action action_; // オブジェクト生成時に更新
+
+    void ComputeHash() {
+        // action_ から hash_ を計算する
+        hash_ = 0u;
+        constexpr auto base = 1009u;
+        for (const auto& [shipyard_id, shipyard_action] : action_.actions) {
+            if (shipyard_action.num_ships_ == 0)
+                continue;
+            for (const auto s : shipyard_action.Str()) {
+                hash_ *= base;
+                hash_ += shipyard_id + s;
+            }
+        }
+    }
 };
 
 // struct MCTSPairedAction {
@@ -1213,7 +1239,7 @@ struct MCTSNode {
     int n_visited_; // 選ばれた回数
 
     static constexpr auto kMaxNChildren = 12;
-    array<array<float, kMaxNChildren>, 2> policy_;
+    // array<array<float, kMaxNChildren>, 2> policy_;
     array<array<MCTSAction, kMaxNChildren>, 2> candidate_actions_;
     array<array<int, kMaxNChildren>, kMaxNChildren> child_nodes_indices;
 
@@ -1222,7 +1248,7 @@ struct MCTSNode {
     static array<MCTSNode, kMaxNNodes> nodes_buffer_;
 
     static nn::TensorBuffer<float, kMaxNNodes * 8, 4> action_type_buffer;
-    static nn::TensorBuffer<signed char, kMaxNNodes * 8> shipyard_id_buffer;
+    static nn::TensorBuffer<ShipyardId, kMaxNNodes * 8> shipyard_id_buffer;
 
     // 10^8 bytes くらいあるのはちょっと大きすぎ？
     static nn::TensorBuffer<float, kMaxNNodes * 8, 256> codes_buffer;
@@ -1243,8 +1269,10 @@ struct MCTSNode {
         n_codes_ = 0;
     }
 
+    MCTSNode() = default;
+
     MCTSNode(const State& state, const NNUE& nnue)
-        : state_(state), future_info_(), value_(), n_visited_(), policy_(),
+        : state_(state), future_info_(), value_(), n_visited_(), /*policy_(),*/
           candidate_actions_(), child_nodes_indices(), codes_offset_(n_codes_),
           expanded_() {
         // value と code を計算する
@@ -1254,9 +1282,8 @@ struct MCTSNode {
             NNUE::ShipyardFeatureTensor<true>();
         static auto value_tensor = NNUE::OutValueTensor<true>();
         auto code_tensor = CodeTensor();
-        // TODO: これを tensor に置き換え？
-        static auto shipyard_ids =
-            ShipyardIdTensor(); // array<ShipyardId, kMaxBatchSize>();
+
+        auto shipyard_ids = ShipyardIdTensor();
         auto action_type_tensor = ActionTypeTensor();
 
         // 特徴抽出
@@ -1294,6 +1321,7 @@ struct MCTSNode {
                 action_type_tensor[b][3] = -1e30f;
         }
         value_ /= batch_size;
+        value_ = 1.0f / (1.0f + exp(-value_));
     }
 
     auto NShipyards() const { return (int)state_.shipyards_.size(); }
@@ -1366,9 +1394,12 @@ struct MCTSNode {
             // NN の推論が必要な code だけコピー
             static auto action_shipyard_ids =
                 array<ShipyardId, kMaxBatchSize>();
+            static auto action_batch_indices =
+                array<signed char, kMaxBatchSize>();
             auto action_batch_size = 0;
             for (auto b = 0; b < batch_size; b++)
                 if (action_types_indices[b][0].size()) {
+                    action_batch_indices[action_batch_size] = b;
                     action_shipyard_ids[action_batch_size] = shipyard_ids[b];
                     action_decoder_in_tensor[action_batch_size++] =
                         code_tensor[b];
@@ -1381,12 +1412,12 @@ struct MCTSNode {
 
             // shipyard ごとに処理
             for (auto ab = 0; ab < action_batch_size; ab++) {
+                const auto b = action_batch_indices[ab];
                 const auto shipyard_id = action_shipyard_ids[ab];
                 const auto& shipyard = state_.shipyards_.at(shipyard_id);
 
                 // 子ごとに処理
-                for (auto idx_children = 0; idx_children < kMaxNChildren;
-                     idx_children++) {
+                for (const auto idx_children : action_types_indices[b][0]) {
                     const auto max_spawn =
                         min(shipyard.MaxSpawn(),
                             player_spawn_capacities[idx_children]
@@ -1415,9 +1446,12 @@ struct MCTSNode {
             // NN の推論が必要な code だけコピー
             static auto action_shipyard_ids =
                 array<ShipyardId, kMaxBatchSize>();
+            static auto action_batch_indices =
+                array<signed char, kMaxBatchSize>();
             auto action_batch_size = 0;
             for (auto b = 0; b < batch_size; b++)
-                if (action_types_indices[b][0].size()) {
+                if (action_types_indices[b][1].size()) {
+                    action_batch_indices[action_batch_size] = b;
                     action_shipyard_ids[action_batch_size] = shipyard_ids[b];
                     action_decoder_in_tensor[action_batch_size++] =
                         code_tensor[b];
@@ -1445,6 +1479,7 @@ struct MCTSNode {
 
             // shipyard ごとに処理
             for (auto ab = 0; ab < action_batch_size; ab++) {
+                const auto b = action_batch_indices[ab];
                 const auto shipyard_id = action_shipyard_ids[ab];
                 const auto& shipyard = state_.shipyards_.at(shipyard_id);
                 const auto mask_opponent =
@@ -1744,8 +1779,7 @@ struct MCTSNode {
                         relative_position_tensor[ab][i] = -1e30f;
 
                 // 子ごとに処理
-                for (auto idx_children = 0; idx_children < kMaxNChildren;
-                     idx_children++) {
+                for (const auto idx_children : action_types_indices[b][1]) {
 
                     // 最初に目的地を決める
                     auto relative_position = 0;
@@ -1756,6 +1790,12 @@ struct MCTSNode {
                     auto n_steps_candidates = array<bool, 24>();
                     const auto [target_u, target_v] =
                         TranslatePosition221ToUV(relative_position);
+                    const auto [target_relative_y, target_relative_x] =
+                        TranslatePosition221ToYX(relative_position);
+                    const auto target_y =
+                        normalize(shipyard.position_.y + target_relative_y);
+                    const auto target_x =
+                        normalize(shipyard.position_.x + target_relative_x);
                     for (auto step = relative_position < 121 ? 2 : 1;
                          step <= 21; step += 2)
                         for (auto plan_length = 1;
@@ -1763,7 +1803,12 @@ struct MCTSNode {
                              plan_length++)
                             n_steps_candidates[step] |=
                                 dp[step][plan_length][target_u][target_v] >=
-                                0.0f;
+                                    0.0f &&
+                                (future_info_[step][{target_y, target_x}]
+                                     .flags &
+                                 mask_plan_length_1);
+                    // hogehogehogehogehogehogehogehogehogehogehogehogehogehogehogehogehogehoge
+
                     auto n_steps_tensor_ab_child = n_steps_tensor[ab].Clone();
                     for (auto i = 0; i < 24; i++)
                         if (!n_steps_candidates[i])
@@ -1790,13 +1835,15 @@ struct MCTSNode {
                     const auto max_n_ships = shipyard.ship_count_;
                     if (min_n_ships > max_n_ships) {
                         // 失敗処理はこれでいいのか？
-                        cerr << "min_n_ships=" << min_n_ships
-                             << " max_n_ships=" << max_n_ships << endl;
+                        if (kEnablePredictionLogging) {
+                            cerr << "min_n_ships=" << min_n_ships
+                                 << " max_n_ships=" << max_n_ships << endl;
 
-                        cerr << "n_steps=" << n_steps
-                             << " relative_position:" << relative_position
-                             << endl;
-                        cerr << "失敗しちゃったよ move" << endl;
+                            cerr << "n_steps=" << n_steps
+                                 << " relative_position:" << relative_position
+                                 << endl;
+                            cerr << "失敗しちゃったよ move" << endl;
+                        }
                         continue;
                     }
                     auto n_ships_tensor_ab_child = n_ships_tensor[ab].Clone();
@@ -1818,7 +1865,8 @@ struct MCTSNode {
                         }
                     }
                     if (best_plan_length == 0) {
-                        cerr << "失敗 2" << endl;
+                        if (kEnablePredictionLogging)
+                            cerr << "失敗 2" << endl;
                         continue;
                     }
 
@@ -1884,9 +1932,12 @@ struct MCTSNode {
             // NN の推論が必要な code だけコピー
             static auto action_shipyard_ids =
                 array<ShipyardId, kMaxBatchSize>();
+            static auto action_batch_indices =
+                array<signed char, kMaxBatchSize>();
             auto action_batch_size = 0;
             for (auto b = 0; b < batch_size; b++)
-                if (action_types_indices[b][0].size()) {
+                if (action_types_indices[b][2].size()) {
+                    action_batch_indices[action_batch_size] = b;
                     action_shipyard_ids[action_batch_size] = shipyard_ids[b];
                     action_decoder_in_tensor[action_batch_size++] =
                         code_tensor[b];
@@ -1907,6 +1958,7 @@ struct MCTSNode {
 
             // shipyard ごとに処理
             for (auto ab = 0; ab < action_batch_size; ab++) {
+                const auto b = action_batch_indices[ab];
                 const auto shipyard_id = action_shipyard_ids[ab];
                 const auto& shipyard = state_.shipyards_.at(shipyard_id);
                 if (shipyard.ship_count_ <= 1)
@@ -1943,14 +1995,14 @@ struct MCTSNode {
                         relative_position_tensor[ab][223] = -1e30f;
 
                 // 子ごとに処理
-                for (auto idx_children = 0; idx_children < kMaxNChildren;
-                     idx_children++) {
+                for (const auto idx_children : action_types_indices[b][2]) {
                     auto target_position = 0;
                     nn::F::SampleFromLogit(relative_position_tensor[ab],
                                            target_position);
                     if (relative_position_tensor[ab][target_position] <=
                         -1e30f) {
-                        cerr << "失敗 attack" << endl;
+                        if (kEnablePredictionLogging)
+                            cerr << "失敗 attack" << endl;
                         continue;
                     }
                     const auto [target_dy_positive, target_dx_positive] =
@@ -1990,8 +2042,10 @@ struct MCTSNode {
                         target_dy, target_dx, best_direction);
 
                     // TODO: 経路に障害物がないか検証
-                    cerr << "attack flight_plan:" << endl;
-                    cerr << flight_plan << endl;
+                    if (kEnablePredictionLogging) {
+                        cerr << "attack flight_plan:" << endl;
+                        cerr << flight_plan << endl;
+                    }
 
                     candidate_actions_[shipyard.player_id_][idx_children]
                         .action_.actions.insert(make_pair(
@@ -2007,9 +2061,12 @@ struct MCTSNode {
             // NN の推論が必要な code だけコピー
             static auto action_shipyard_ids =
                 array<ShipyardId, kMaxBatchSize>();
+            static auto action_batch_indices =
+                array<signed char, kMaxBatchSize>();
             auto action_batch_size = 0;
             for (auto b = 0; b < batch_size; b++)
-                if (action_types_indices[b][0].size()) {
+                if (action_types_indices[b][3].size()) {
+                    action_batch_indices[action_batch_size] = b;
                     action_shipyard_ids[action_batch_size] = shipyard_ids[b];
                     action_decoder_in_tensor[action_batch_size++] =
                         code_tensor[b];
@@ -2028,6 +2085,7 @@ struct MCTSNode {
 
             // shipyard ごとに処理
             for (auto ab = 0; ab < action_batch_size; ab++) {
+                const auto b = action_batch_indices[ab];
                 const auto shipyard_id = action_shipyard_ids[ab];
                 const auto& shipyard = state_.shipyards_.at(shipyard_id);
 
@@ -2049,8 +2107,7 @@ struct MCTSNode {
                                            : target_dx_positive - kSize;
 
                 // 子ごとに処理
-                for (auto idx_children = 0; idx_children < kMaxNChildren;
-                     idx_children++) {
+                for (const auto idx_children : action_types_indices[b][3]) {
 
                     auto direction_tensor_ab_child =
                         direction_tensor[ab].Clone();
@@ -2082,20 +2139,44 @@ struct MCTSNode {
                         target_dy, target_dx, best_direction);
 
                     // TODO: 経路に障害物がないか検証
-                    cerr << "convert flight_plan:" << endl;
-                    cerr << flight_plan << endl;
+                    if (kEnablePredictionLogging) {
+                        cerr << "convert flight_plan:" << endl;
+                        cerr << flight_plan << endl;
+                    }
 
                     candidate_actions_[shipyard.player_id_][idx_children]
                         .action_.actions.insert(make_pair(
                             shipyard_id,
                             ShipyardAction(ShipyardActionType::kLaunch, n_ships,
                                            flight_plan)));
+                    // policy
                 }
             }
         } while (false);
 
+        // candidate_actions_ から policy_ を近似計算
+        for (auto player_id = 0; player_id < 2; player_id++) {
+            auto hash_to_index = unordered_map<unsigned, int>();
+            for (auto idx_children = 0; idx_children < kMaxNChildren;
+                 idx_children++) {
+                auto& action = candidate_actions_[player_id][idx_children];
+                action.ComputeHash();
+                const auto it = hash_to_index.find(action.hash_);
+                if (it != hash_to_index.end()) {
+                    // もう見た
+                    candidate_actions_[player_id][it->second].policy_ +=
+                        1.0f / (float)kMaxNChildren;
+                    continue;
+                }
+                hash_to_index.insert(make_pair(action.hash_, idx_children));
+                /*policy_[player_id][idx_children]*/ action.policy_ =
+                    1.0f / (float)kMaxNChildren;
+            }
+        }
+
         // その後、行動をひとつ選んで、子ノードを作り、value を計算する
         // TODO
+        // これは外側でやってもいいか……？
 
         expanded_ = true;
     }
@@ -2121,21 +2202,51 @@ struct MCTSNode {
         return n_ships;
     }
 
-    // state から、policy に基づいてランダムに行動をサンプルする
-    //
-    auto SampleMove() {
-
-        //
-    }
-
     auto ChooseMove() {
-        //
+        // 注意: n_visited が増える
+
+        assert(expanded_);
+        n_visited_++;
+
+        auto result = array<signed char, 2>();
+
+        for (auto player_id = 0; player_id < 2; player_id++) {
+            auto max_score = 0.0f;
+            auto best_action_index = 0;
+            for (auto idx_actions = 0; idx_actions < kMaxNChildren;
+                 idx_actions++) {
+                const auto& action = candidate_actions_[player_id][idx_actions];
+                const auto r = uniform_real_distribution<>(0.0f, 0.02f)(rng);
+                const auto score = r + UCTScore(action);
+                if (max_score < score) {
+                    max_score = score;
+                    best_action_index = idx_actions;
+                }
+            }
+            result[player_id] = best_action_index;
+        }
+        return result;
     }
 
-    inline auto UCTScore() const {
-        //
+    inline float UCTScore(const MCTSAction& action) const {
+        const auto q = (1.0f + action.worth_) / (float)(1 + action.n_chosen_);
+        static constexpr auto kPUCTCoef = 0.5f;
+        const auto u = kPUCTCoef * action.policy_ * sqrt((float)n_visited_) /
+                       (float)(1 + action.n_chosen_);
+        return q + u;
     }
 };
+
+int MCTSNode::n_nodes_;
+array<MCTSNode, MCTSNode::kMaxNNodes> MCTSNode::nodes_buffer_;
+
+nn::TensorBuffer<float, MCTSNode::kMaxNNodes * 8, 4>
+    MCTSNode::action_type_buffer;
+nn::TensorBuffer<ShipyardId, MCTSNode::kMaxNNodes * 8>
+    MCTSNode::shipyard_id_buffer;
+
+nn::TensorBuffer<float, MCTSNode::kMaxNNodes * 8, 256> MCTSNode::codes_buffer;
+int MCTSNode::n_codes_;
 
 struct NNUEMCTSAgent : Agent {
     NNUE nnue;
@@ -2170,13 +2281,97 @@ struct NNUEMCTSAgent : Agent {
         // とりあえずここで大枠を実装してしまうのが良さそう
 
         MCTSNode::ResetStaticMembers();
-        MCTSNode::nodes_buffer_[0] = MCTSNode(state, nnue);
+        auto& root_node = MCTSNode::nodes_buffer_[MCTSNode::n_nodes_++];
+        root_node = MCTSNode(state, nnue);
 
-        // あー、全部の行動列挙できないから、
-        // 最初に既知のノードを走査、その合計の確率が満たないなら
-        // 新しく行動をサンプリングする、という流れになるか？
+        struct PathInfo {
+            int node_index;
+            array<signed char, 2> action_indices;
+        };
+        auto path_node_indices = vector<PathInfo>();
 
-        return Action();
+        const auto t0 = Time();
+
+        while (Time() - t0 < 2.9) {
+            auto current_node_index = 0;
+            while (true) {
+                auto& node = MCTSNode::nodes_buffer_[current_node_index];
+                if (!node.expanded_) {
+                    // action の候補が選出されていない状態
+                    node.Expand(spawn_decoder, move_decoder, attack_decoder,
+                                convert_decoder);
+                }
+
+                const auto action_indices = node.ChooseMove();
+                auto& child_node_index =
+                    node.child_nodes_indices[action_indices[0]]
+                                            [action_indices[1]];
+
+                path_node_indices.push_back(
+                    {current_node_index, action_indices});
+                if (child_node_index == 0) {
+                    child_node_index = MCTSNode::n_nodes_++;
+                    auto action =
+                        node.candidate_actions_[0][action_indices[0]].action_;
+                    auto action1 =
+                        node.candidate_actions_[1][action_indices[1]].action_;
+                    action.Merge(action1);
+                    MCTSNode::nodes_buffer_[child_node_index] =
+                        MCTSNode(node.state_.Next(action), nnue);
+                    // TODO: バックトラック
+                    // path_node_indices.push_back({child_node_index, {}});
+                    current_node_index = child_node_index;
+                    break;
+                }
+                current_node_index = child_node_index;
+            }
+
+            const auto value =
+                MCTSNode::nodes_buffer_[current_node_index].value_;
+
+            // バックトラック
+            while (path_node_indices.size()) {
+                const auto [parent_node_index, action_indices] =
+                    path_node_indices.back();
+                path_node_indices.pop_back();
+                auto& parent_node = MCTSNode::nodes_buffer_[parent_node_index];
+                parent_node.candidate_actions_[0][action_indices[0]].worth_ +=
+                    value;
+                parent_node.candidate_actions_[1][action_indices[1]].worth_ +=
+                    1.0f - value;
+                parent_node.candidate_actions_[0][action_indices[0]]
+                    .n_chosen_++;
+                parent_node.candidate_actions_[1][action_indices[1]]
+                    .n_chosen_++;
+            }
+        }
+
+        // ログを吐きつつ行動を決定する
+        auto best_actions = array<Action, 2>();
+        for (auto player_id = 0; player_id < 2; player_id++) {
+            auto max_n_chosen = 0;
+            cout << "action,policy,n_chosen,mean_worth" << endl;
+            for (auto idx_action = 0; idx_action < MCTSNode::kMaxNChildren;
+                 idx_action++) {
+                const auto& action =
+                    root_node.candidate_actions_[player_id][idx_action];
+                if (action.policy_ == 0.0f)
+                    continue;
+
+                if (max_n_chosen < action.n_chosen_) {
+                    max_n_chosen = action.n_chosen_;
+                    best_actions[player_id] = action.action_;
+                }
+                for (auto [shipyard_id, shipyard_action] :
+                     action.action_.actions) {
+                    cout << shipyard_id << ":" << shipyard_action.Str() << ",";
+                }
+                cout << action.policy_ << "," << action.n_chosen_ << ","
+                     << action.worth_ / action.n_chosen_ << endl;
+            }
+        }
+        best_actions[0].Merge(best_actions[1]);
+        return best_actions[0];
     }
 };
 
@@ -2217,6 +2412,8 @@ static void TestPrediction(const string kif_filename,
     convert_direction_tensor.Fill_(-1e30f);
 
     static auto agent = NNUEGreedyAgent(parameter_filename);
+    static auto agent_mcts = NNUEMCTSAgent();
+    agent_mcts.ReadParameters(parameter_filename);
 
     // ==============================
     auto is = ifstream(kif_filename);
@@ -2308,6 +2505,15 @@ static void TestPrediction(const string kif_filename,
             const auto predicted_actions = agent.ComputeNextMove(state);
             for (const auto& [shipyard_id, shipyard_action] :
                  predicted_actions.actions) {
+                cout << shipyard_id << ": " << shipyard_action.Str() << endl;
+            }
+
+            cout << kTextBold << "--- MCTS Predicted actions ---"
+                 << kResetTextStyle << endl;
+            const auto mcts_predicted_action =
+                agent_mcts.ComputeNextMove(state);
+            for (const auto& [shipyard_id, shipyard_action] :
+                 mcts_predicted_action.actions) {
                 cout << shipyard_id << ": " << shipyard_action.Str() << endl;
             }
 
@@ -2501,10 +2707,12 @@ static void TestPrediction(const string kif_filename,
     }
 }
 
+#ifdef TEST_PREDICTION
 int main() {
     //
     TestPrediction("36385265.kif", "parameters_01340000.bin");
 }
 // clang-format off
-// clang++ nnue.cpp -std=c++17 -Wall -Wextra -march=native -l:libblas.so.3 -fsanitize=address -g
+// clang++ -DTEST_PREDICTION nnue.cpp -std=c++17 -Wall -Wextra -march=native -l:libblas.so.3 -fsanitize=address -g
 // clang-format on
+#endif

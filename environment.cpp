@@ -1656,7 +1656,7 @@ int main() {
 // clang-format on
 #endif
 
-// TODO: MCTS (最重要)
+// TODO: root node 以外はもっと子の数を制限したほうがいいかも
 // TODO: 艦隊が合体する時、fleetの数に制限をつける
 // - そもそも合体考えなくていいかも
 // TODO: 艦隊が U ターンする時、拾う数にペナルティ？
