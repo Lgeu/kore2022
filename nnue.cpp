@@ -1330,20 +1330,21 @@ struct MCTSNode {
     float value_;   // player 0 視点の状態評価値
     int n_visited_; // 選ばれた回数
 
-    static constexpr auto kMaxNChildren = 12;
-    // array<array<float, kMaxNChildren>, 2> policy_;
-    array<array<MCTSAction, kMaxNChildren>, 2> candidate_actions_;
-    array<array<int, kMaxNChildren>, kMaxNChildren> child_nodes_indices;
+    static constexpr auto kMaxNChildrenRoot = 12;
+    static constexpr auto kMaxNChildren = 3;
+
+    array<array<MCTSAction, kMaxNChildrenRoot>, 2> candidate_actions_;
+    array<array<int, kMaxNChildrenRoot>, kMaxNChildrenRoot> child_nodes_indices;
 
     static constexpr auto kMaxNNodes = 10000;
     static int n_nodes_;
     static array<MCTSNode, kMaxNNodes> nodes_buffer_;
 
-    static nn::TensorBuffer<float, kMaxNNodes * 8, 4> action_type_buffer;
-    static nn::TensorBuffer<ShipyardId, kMaxNNodes * 8> shipyard_id_buffer;
+    static nn::TensorBuffer<float, kMaxNNodes * 16, 4> action_type_buffer;
+    static nn::TensorBuffer<ShipyardId, kMaxNNodes * 16> shipyard_id_buffer;
 
     // 10^8 bytes くらいあるのはちょっと大きすぎ？
-    static nn::TensorBuffer<float, kMaxNNodes * 8, 256> codes_buffer;
+    static nn::TensorBuffer<float, kMaxNNodes * 16, 256> codes_buffer;
     static int n_codes_;
     int codes_offset_;
 
@@ -1432,6 +1433,8 @@ struct MCTSNode {
             &shipyard_id_buffer[codes_offset_]);
     }
 
+    inline auto IsRoot() const { return codes_offset_ == 0; }
+
     auto Expand(const SpawnDecoder& spawn_decoder,
                 const MoveDecoder& move_decoder,
                 const AttackDecoder& attack_decoder,
@@ -1447,15 +1450,14 @@ struct MCTSNode {
         // まず type
         const auto action_type_tensor = ActionTypeTensor(); // [100, 4]
         const auto batch_size = NShipyards();
-        // static auto action_type_chosen = array<array<bool, 4>,
-        // kMaxBatchSize>(); static auto action_types =
-        //     array<array<signed char, kMaxNChildren>, kMaxBatchSize>();
+
         static auto action_types_indices =
             array<array<vector<signed char>, 4>, kMaxBatchSize>();
         for (auto b = 0; b < batch_size; b++) {
             for (auto a = 0; a < 4; a++)
                 action_types_indices[b][a].clear();
-            for (auto i = 0; i < kMaxNChildren; i++) {
+            for (auto i = 0; i < (IsRoot() ? kMaxNChildrenRoot : kMaxNChildren);
+                 i++) {
                 auto action_type = 0;
                 nn::F::SampleFromLogit(action_type_tensor[b], action_type);
                 // action_type_chosen[b][action_type] = true;
@@ -1475,8 +1477,9 @@ struct MCTSNode {
         {
             // 子ノードごと、プレイヤーごとの残りスポーン可能数
             auto player_spawn_capacities =
-                array<array<int, 2>, kMaxNChildren>();
-            for (auto idx_children = 0; idx_children < kMaxNChildren;
+                array<array<int, 2>, kMaxNChildrenRoot>();
+            for (auto idx_children = 0;
+                 idx_children < (IsRoot() ? kMaxNChildrenRoot : kMaxNChildren);
                  idx_children++)
                 for (auto player_id = 0; player_id < 2; player_id++) {
                     player_spawn_capacities[idx_children][player_id] =
@@ -2336,7 +2339,8 @@ struct MCTSNode {
         // candidate_actions_ から policy_ を近似計算
         for (auto player_id = 0; player_id < 2; player_id++) {
             auto hash_to_index = unordered_map<unsigned, int>();
-            for (auto idx_children = 0; idx_children < kMaxNChildren;
+            for (auto idx_children = 0;
+                 idx_children < (IsRoot() ? kMaxNChildrenRoot : kMaxNChildren);
                  idx_children++) {
                 auto& action = candidate_actions_[player_id][idx_children];
                 action.ComputeHash();
@@ -2344,12 +2348,13 @@ struct MCTSNode {
                 if (it != hash_to_index.end()) {
                     // もう見た
                     candidate_actions_[player_id][it->second].policy_ +=
-                        1.0f / (float)kMaxNChildren;
+                        1.0f /
+                        (float)(IsRoot() ? kMaxNChildrenRoot : kMaxNChildren);
                     continue;
                 }
                 hash_to_index.insert(make_pair(action.hash_, idx_children));
-                /*policy_[player_id][idx_children]*/ action.policy_ =
-                    1.0f / (float)kMaxNChildren;
+                action.policy_ = 1.0f / (float)(IsRoot() ? kMaxNChildrenRoot
+                                                         : kMaxNChildren);
             }
         }
 
@@ -2392,7 +2397,8 @@ struct MCTSNode {
         for (auto player_id = 0; player_id < 2; player_id++) {
             auto max_score = 0.0f;
             auto best_action_index = 0;
-            for (auto idx_actions = 0; idx_actions < kMaxNChildren;
+            for (auto idx_actions = 0;
+                 idx_actions < (IsRoot() ? kMaxNChildrenRoot : kMaxNChildren);
                  idx_actions++) {
                 const auto& action = candidate_actions_[player_id][idx_actions];
                 const auto r = uniform_real_distribution<>(0.0f, 0.02f)(rng);
@@ -2421,12 +2427,12 @@ struct MCTSNode {
 int MCTSNode::n_nodes_;
 array<MCTSNode, MCTSNode::kMaxNNodes> MCTSNode::nodes_buffer_;
 
-nn::TensorBuffer<float, MCTSNode::kMaxNNodes * 8, 4>
+nn::TensorBuffer<float, MCTSNode::kMaxNNodes * 16, 4>
     MCTSNode::action_type_buffer;
-nn::TensorBuffer<ShipyardId, MCTSNode::kMaxNNodes * 8>
+nn::TensorBuffer<ShipyardId, MCTSNode::kMaxNNodes * 16>
     MCTSNode::shipyard_id_buffer;
 
-nn::TensorBuffer<float, MCTSNode::kMaxNNodes * 8, 256> MCTSNode::codes_buffer;
+nn::TensorBuffer<float, MCTSNode::kMaxNNodes * 16, 256> MCTSNode::codes_buffer;
 int MCTSNode::n_codes_;
 
 struct NNUEMCTSAgent : Agent {
@@ -2532,7 +2538,7 @@ struct NNUEMCTSAgent : Agent {
         for (auto player_id = 0; player_id < 2; player_id++) {
             auto max_n_chosen = 0;
             cerr << "action,policy,n_chosen,mean_worth" << endl;
-            for (auto idx_action = 0; idx_action < MCTSNode::kMaxNChildren;
+            for (auto idx_action = 0; idx_action < MCTSNode::kMaxNChildrenRoot;
                  idx_action++) {
                 const auto& action =
                     root_node.candidate_actions_[player_id][idx_action];
