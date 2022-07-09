@@ -1398,7 +1398,9 @@ struct MCTSNode {
 
         // value の集計
         for (auto b = 0; b < batch_size; b++) {
-            if (b < (int)state.players_[0].shipyard_ids_.size())
+            const auto player_id =
+                b < (int)state.players_[0].shipyard_ids_.size() ? 0 : 1;
+            if (player_id == 0)
                 value_ += value_tensor[b];
             else
                 value_ -= value_tensor[b];
@@ -1413,8 +1415,14 @@ struct MCTSNode {
             if (n_ships < kConvertCost)
                 action_type_tensor[b][3] = -1e30f;
 
+            // とどめを刺す
+            if ((value_ > 0.999 && player_id == 0) ||
+                (value_ < 0.001 && player_id == 1)) {
+                action_type_tensor[b][3] += 3.0;
+            }
+
             // 調子に乗って造船所を造りすぎないようにする
-            if (state.shipyards_.size() >= 32)
+            if (state.players_[player_id].shipyard_ids_.size() >= 32)
                 action_type_tensor[b][3] = -1e30f;
         }
         value_ /= batch_size;
