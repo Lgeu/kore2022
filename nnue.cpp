@@ -1412,6 +1412,10 @@ struct MCTSNode {
                 action_type_tensor[b][2] = -1e30f;
             if (n_ships < kConvertCost)
                 action_type_tensor[b][3] = -1e30f;
+
+            // 調子に乗って造船所を造りすぎないようにする
+            if (state.shipyards_.size() >= 32)
+                action_type_tensor[b][3] = -1e30f;
         }
         value_ /= batch_size;
         value_ = 1.0f / (1.0f + exp(-value_));
