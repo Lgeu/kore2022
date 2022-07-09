@@ -1244,6 +1244,13 @@ struct ReachableNShips {
         reachable_all.Fill_(0);
         auto player_id = 0;
         for (auto i = 0; i <= 21; i++) {
+            // 1 手反応が遅れるため、先に 1 手進める
+            auto action = SpawnAgent().ComputeNextMove(state, 0);
+            auto action1 = SpawnAgent().ComputeNextMove(state, 1);
+            action.Merge(action1);
+            assert(action1.actions.size() == 0);
+            state = state.Next(action);
+
             for (const auto& [_, shipyard] : state.shipyards_) {
                 const auto [sy, sx] = shipyard.position_;
                 const auto delta = i == 0
@@ -1307,13 +1314,6 @@ struct ReachableNShips {
                             reachable[i][p][y + kSize][x] +
                             reachable[i][p][y + kSize][x + kSize];
             }
-
-            // 次のターンへ
-            auto action = SpawnAgent().ComputeNextMove(state, 0);
-            auto action1 = SpawnAgent().ComputeNextMove(state, 1);
-            action.Merge(action1);
-            assert(action1.actions.size() == 0);
-            state = state.Next(action);
         }
     }
 
