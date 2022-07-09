@@ -1232,6 +1232,98 @@ struct MCTSAction {
 //     int next_node_index_;
 // };
 
+struct ReachableNShips {
+    nn::TensorBuffer<short, 22, 2, kSize * 2, kSize * 2> reachable;
+    void Compute(State state) {
+
+        // 到達可能艦数 (自分、相手)
+        // 経路にたまたまいるのは除く
+
+        static auto reachable_all = nn::TensorBuffer<short, 22, 2>();
+        reachable.Fill_(0);
+        reachable_all.Fill_(0);
+        auto player_id = 0;
+        for (auto i = 0; i <= 21; i++) {
+            for (const auto& [_, shipyard] : state.shipyards_) {
+                const auto [sy, sx] = shipyard.position_;
+                const auto delta = i == 0
+                                       ? shipyard.ship_count_
+                                       : (short)(shipyard.last_ship_increment_ -
+                                                 shipyard.last_ship_decrement_);
+                const auto away = shipyard.player_id_ != player_id;
+                for (auto n = 0; i + n <= 21; n++) {
+                    if (n < kSize / 2) {
+                        const auto cx = sx - n - 1 >= 0 ? sx : sx + kSize;
+                        const auto cy = sy - n >= 0 ? sy + 1 : sy + 1 + kSize;
+                        reachable[i + n][away][cy - n - 1][cx] += delta;
+                        reachable[i + n][away][cy - n][cx] += delta;
+                        reachable[i + n][away][cy][cx - n - 1] -= delta;
+                        reachable[i + n][away][cy][cx - n] -= delta;
+                        reachable[i + n][away][cy][cx + n + 1] -= delta;
+                        reachable[i + n][away][cy][cx + n] -= delta;
+                        reachable[i + n][away][cy + n][cx] += delta;
+                        reachable[i + n][away][cy + n + 1][cx] += delta;
+                    } else if (n < kSize - 1) {
+                        reachable_all[i + n][away] += delta;
+                        const auto cx = sx + kSize / 2;
+                        auto cy = sy + kSize / 2 + 1;
+                        if (sy == kSize - 1)
+                            cy -= kSize;
+                        const auto r = kSize - 1 - n;
+                        reachable[i + n][away][cy - r][cx] -= delta;
+                        reachable[i + n][away][cy - r][cx + 1] -= delta;
+                        reachable[i + n][away][cy][cx - r] += delta;
+                        reachable[i + n][away][cy][cx + r + 1] += delta;
+                        reachable[i + n][away][cy + 1][cx - r] += delta;
+                        reachable[i + n][away][cy + 1][cx + r + 1] += delta;
+                        reachable[i + n][away][cy + r + 1][cx] -= delta;
+                        reachable[i + n][away][cy + r + 1][cx + 1] -= delta;
+                    } else {
+                        reachable_all[i + n][away] += delta;
+                    }
+                }
+            }
+
+            for (auto p = 0; p < 2; p++) {
+                // 累積 (左下へ)
+                for (auto y = 0; y < kSize * 2 - 1; y++)
+                    for (auto x = 1; x < kSize * 2; x++)
+                        reachable[i][p][y + 1][x - 1] += reachable[i][p][y][x];
+                // reachable_all を reachable にマージ
+                for (auto x = kSize; x < kSize * 2; x++)
+                    reachable[i][p][kSize][x] += reachable_all[i][p];
+                for (auto y = kSize + 1; y < kSize * 2; y++)
+                    reachable[i][p][y][kSize] += reachable_all[i][p];
+                // 累積 (右下へ)
+                for (auto y = 0; y < kSize * 2 - 1; y++)
+                    for (auto x = 0; x < kSize * 2 - 1; x++)
+                        reachable[i][p][y + 1][x + 1] += reachable[i][p][y][x];
+                // 4 つに分かれてるのを 1 箇所に集める
+                for (auto y = 0; y < kSize; y++)
+                    for (auto x = 0; x < kSize; x++)
+                        reachable[i][p][y][x] =
+                            reachable[i][p][y][x] +
+                            reachable[i][p][y][x + kSize] +
+                            reachable[i][p][y + kSize][x] +
+                            reachable[i][p][y + kSize][x + kSize];
+            }
+
+            // 次のターンへ
+            auto action = SpawnAgent().ComputeNextMove(state, 0);
+            auto action1 = SpawnAgent().ComputeNextMove(state, 1);
+            action.Merge(action1);
+            assert(action1.actions.size() == 0);
+            state = state.Next(action);
+        }
+    }
+
+    inline auto Get(int step, int player, int y, int x) const {
+        assert(0 <= y && y < kSize);
+        assert(0 <= x && x < kSize);
+        return reachable[step][player][y][x];
+    }
+};
+
 struct MCTSNode {
     State state_;
     decltype(NNUEFeature::future_info) future_info_;
@@ -1443,6 +1535,7 @@ struct MCTSNode {
 
         // Move
         do {
+
             // NN の推論が必要な code だけコピー
             static auto action_shipyard_ids =
                 array<ShipyardId, kMaxBatchSize>();
@@ -1476,6 +1569,8 @@ struct MCTSNode {
             static auto dp_from = array<
                 array<array<array<signed char, 11>, 11>, kMaxPlanLength + 2>,
                 22>();
+            static auto reachable_n_ships = ReachableNShips();
+            reachable_n_ships.Compute(state_);
 
             // shipyard ごとに処理
             for (auto ab = 0; ab < action_batch_size; ab++) {
@@ -1556,6 +1651,16 @@ struct MCTSNode {
                                         if (target_info.flags & mask_opponent)
                                             break;
 
+                                        // 自分の艦数以上に相手の艦隊が到達可能な場合、計算しない
+                                        // 反応に 1 手遅れるのと
+                                        // 隣接しても攻撃になるのを合わせて
+                                        // 特に補正は要らない
+                                        if (reachable_n_ships.Get(
+                                                step + distance,
+                                                1 - shipyard.player_id_, y2,
+                                                x2) > shipyard.ship_count_)
+                                            break;
+
                                         const auto u2 = (u - distance) >> 1;
                                         const auto v2 = (v - distance) >> 1;
                                         cumulative_kore += target_info.kore;
@@ -1613,6 +1718,16 @@ struct MCTSNode {
 
                                         // 相手の造船所、相手の艦隊、相手の隣接艦隊がある場合、計算しない
                                         if (target_info.flags & mask_opponent)
+                                            break;
+
+                                        // 自分の艦数以上に相手の艦隊が到達可能な場合、計算しない
+                                        // 反応に 1 手遅れるのと
+                                        // 隣接しても攻撃になるのを合わせて
+                                        // 特に補正は要らない
+                                        if (reachable_n_ships.Get(
+                                                step + distance,
+                                                1 - shipyard.player_id_, y2,
+                                                x2) > shipyard.ship_count_)
                                             break;
 
                                         const auto u2 = (u - distance) >> 1;
@@ -1674,6 +1789,16 @@ struct MCTSNode {
                                         if (target_info.flags & mask_opponent)
                                             break;
 
+                                        // 自分の艦数以上に相手の艦隊が到達可能な場合、計算しない
+                                        // 反応に 1 手遅れるのと
+                                        // 隣接しても攻撃になるのを合わせて
+                                        // 特に補正は要らない
+                                        if (reachable_n_ships.Get(
+                                                step + distance,
+                                                1 - shipyard.player_id_, y2,
+                                                x2) > shipyard.ship_count_)
+                                            break;
+
                                         const auto u2 = (u + distance) >> 1;
                                         const auto v2 = (v + distance) >> 1;
                                         cumulative_kore += target_info.kore;
@@ -1732,6 +1857,16 @@ struct MCTSNode {
 
                                         // 相手の造船所、相手の艦隊、相手の隣接艦隊がある場合、計算しない
                                         if (target_info.flags & mask_opponent)
+                                            break;
+
+                                        // 自分の艦数以上に相手の艦隊が到達可能な場合、計算しない
+                                        // 反応に 1 手遅れるのと
+                                        // 隣接しても攻撃になるのを合わせて
+                                        // 特に補正は要らない
+                                        if (reachable_n_ships.Get(
+                                                step + distance,
+                                                1 - shipyard.player_id_, y2,
+                                                x2) > shipyard.ship_count_)
                                             break;
 
                                         const auto u2 = (u + distance) >> 1;
@@ -1878,6 +2013,7 @@ struct MCTSNode {
                     auto path_step = n_steps;
                     auto path_plan_length = best_plan_length;
                     auto last_step = true; // 回収して戻る場合にはまた注意
+                    auto safe_n_ships = 0;
                     do {
                         const auto u = (10 + path_y - path_x) >> 1;
                         const auto v = (10 + path_y + path_x) >> 1;
@@ -1899,30 +2035,73 @@ struct MCTSNode {
                         flight_plan += "NESW"[direction];
                         switch ((Direction)direction) {
                         case Direction::N:
+                            for (auto d = 0; d <= number; d++) {
+                                safe_n_ships = max(
+                                    safe_n_ships,
+                                    (int)reachable_n_ships.Get(
+                                        path_step - d, 1 - shipyard.player_id_,
+                                        normalize(shipyard.position_.y +
+                                                  path_y + d),
+                                        normalize(shipyard.position_.x +
+                                                  path_x)));
+                            }
                             path_y += 1 + number;
                             break;
                         case Direction::E:
+                            for (auto d = 0; d <= number; d++) {
+                                safe_n_ships = max(
+                                    safe_n_ships,
+                                    (int)reachable_n_ships.Get(
+                                        path_step - d, 1 - shipyard.player_id_,
+                                        normalize(shipyard.position_.y +
+                                                  path_y),
+                                        normalize(shipyard.position_.x +
+                                                  path_x - d)));
+                            }
                             path_x -= 1 + number;
                             break;
                         case Direction::S:
+                            for (auto d = 0; d <= number; d++) {
+                                safe_n_ships = max(
+                                    safe_n_ships,
+                                    (int)reachable_n_ships.Get(
+                                        path_step - d, 1 - shipyard.player_id_,
+                                        normalize(shipyard.position_.y +
+                                                  path_y - d),
+                                        normalize(shipyard.position_.x +
+                                                  path_x)));
+                            }
                             path_y -= 1 + number;
                             break;
                         case Direction::W:
+                            for (auto d = 0; d <= number; d++) {
+                                safe_n_ships = max(
+                                    safe_n_ships,
+                                    (int)reachable_n_ships.Get(
+                                        path_step - d, 1 - shipyard.player_id_,
+                                        normalize(shipyard.position_.y +
+                                                  path_y),
+                                        normalize(shipyard.position_.x +
+                                                  path_x + d)));
+                            }
                             path_x += 1 + number;
                             break;
                         }
                         path_step -= 1 + number;
                         path_plan_length -= number == 0 || last_step ? 1 : 2;
                         last_step = false;
+                        assert(safe_n_ships <= max_n_ships);
                     } while (true);
+                    const auto clipped_n_ships =
+                        min(max(n_ships, safe_n_ships + 1), (int)max_n_ships);
                     reverse(flight_plan.begin(), flight_plan.end());
                     if ('0' <= flight_plan.back() && flight_plan.back() <= '9')
                         flight_plan.pop_back();
                     candidate_actions_[shipyard.player_id_][idx_children]
                         .action_.actions.insert(make_pair(
                             shipyard_id,
-                            ShipyardAction(ShipyardActionType::kLaunch, n_ships,
-                                           flight_plan)));
+                            ShipyardAction(ShipyardActionType::kLaunch,
+                                           clipped_n_ships, flight_plan)));
                 }
             }
         } while (false);
@@ -2548,6 +2727,7 @@ struct NNUEMCTSAgent : Agent {
                 result.resize(min((int)result.size(), n));
                 return result;
             };
+            /*
 
             const auto top_n = 5;
             cout << "-- spawn n_ships --" << endl;
@@ -2687,6 +2867,7 @@ struct NNUEMCTSAgent : Agent {
                 }
                 cout << endl;
             }
+            */
             cout << endl;
 
             // if (state.step_ >= 200)
