@@ -2160,10 +2160,14 @@ struct MCTSNode {
                     for (auto dx = -10 + abs(dy); dx <= 10 - abs(dy); dx++) {
                         const auto y = normalize(shipyard.position_.y + dy);
                         const auto x = normalize(shipyard.position_.x + dx);
-                        if ((dy != 0 || dx != 0) &&
-                            (future_info_[abs(dy) + abs(dx)][{y, x}].flags &
-                             mask_opponent))
-                            continue;
+                        if (dy != 0 || dx != 0) {
+                            const auto& info =
+                                future_info_[abs(dy) + abs(dx)][{y, x}];
+                            if ((info.flags & mask_opponent) &&
+                                info.n_ships[1 - shipyard.player_id_] <=
+                                    shipyard.ship_count_)
+                                continue;
+                        }
                         const auto u = (10 + dy - dx) >> 1;
                         const auto v = (10 + dy + dx) >> 1;
                         const auto idx_relative_position =
@@ -2213,7 +2217,14 @@ struct MCTSNode {
                                            best_direction);
 
                     // 艦数を決める
-                    const auto min_n_ships = min(21, (int)shipyard.ship_count_);
+                    const auto target_y =
+                        normalize(shipyard.position_.y + target_dy);
+                    const auto target_x =
+                        normalize(shipyard.position_.x + target_dx);
+                    const auto min_n_ships =
+                        future_info_[abs(target_dy) + abs(target_dx)]
+                                    [{target_y, target_x}]
+                                        .n_ships[1 - shipyard.player_id_];
                     auto max_n_ships = shipyard.ship_count_;
                     auto n_ships_tensor_ab_child = n_ships_tensor[ab].Clone();
                     const auto n_ships = DetermineNShips(
@@ -2533,6 +2544,7 @@ struct NNUEMCTSAgent : Agent {
         }
 
         // ログを吐きつつ行動を決定する
+        cerr << "step=" << state.step_ << endl;
         cerr << "iteration=" << iteration << endl;
         auto best_actions = array<Action, 2>();
         for (auto player_id = 0; player_id < 2; player_id++) {
@@ -2557,6 +2569,7 @@ struct NNUEMCTSAgent : Agent {
                      << action.worth_ / action.n_chosen_ << endl;
             }
         }
+        cerr << endl;
         best_actions[0].Merge(best_actions[1]);
         return best_actions[0];
     }

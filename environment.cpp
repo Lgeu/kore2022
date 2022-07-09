@@ -1182,6 +1182,7 @@ struct NNUEFeature {
 
     struct FeatureInfo {
         unsigned char flags;
+        array<unsigned char, 2> n_ships; // 複数の艦隊は考えない
         float kore;
     };
     array<Board<FeatureInfo, kSize, kSize>, 22> future_info;
@@ -1208,26 +1209,43 @@ struct NNUEFeature {
             // future_info に書き込む
             for (const auto& [_, fleet] : state_i.fleets_) {
                 const auto& p = fleet.position_;
+                const auto clipped_n_ships = min(fleet.ship_count_, (short)255);
+
+                auto q = Point{(int)p.y, p.x == 0 ? kSize - 1 : p.x - 1};
+                future_info[i][q].flags |= fleet.player_id_ == 0
+                                               ? kPlayer0FleetAdjacent
+                                               : kPlayer1FleetAdjacent;
+                future_info[i][q].n_ships[fleet.player_id_] = clipped_n_ships;
+
+                q = {(int)p.y, p.x == kSize - 1 ? 0 : p.x + 1};
+                future_info[i][q].flags |= fleet.player_id_ == 0
+                                               ? kPlayer0FleetAdjacent
+                                               : kPlayer1FleetAdjacent;
+                future_info[i][q].n_ships[fleet.player_id_] = clipped_n_ships;
+
+                q = {p.y == 0 ? kSize - 1 : p.y - 1, (int)p.x};
+                future_info[i][q].flags |= fleet.player_id_ == 0
+                                               ? kPlayer0FleetAdjacent
+                                               : kPlayer1FleetAdjacent;
+                future_info[i][q].n_ships[fleet.player_id_] = clipped_n_ships;
+
+                q = {p.y == kSize - 1 ? 0 : p.y + 1, (int)p.x};
+                future_info[i][q].flags |= fleet.player_id_ == 0
+                                               ? kPlayer0FleetAdjacent
+                                               : kPlayer1FleetAdjacent;
+                future_info[i][q].n_ships[fleet.player_id_] = clipped_n_ships;
+
                 future_info[i][p].flags |=
                     fleet.player_id_ == 0 ? kPlayer0Fleet : kPlayer1Fleet;
-                future_info[i][{(int)p.y, p.x == 0 ? kSize - 1 : p.x - 1}]
-                    .flags |= fleet.player_id_ == 0 ? kPlayer0FleetAdjacent
-                                                    : kPlayer1FleetAdjacent;
-                future_info[i][{(int)p.y, p.x == kSize - 1 ? 0 : p.x + 1}]
-                    .flags |= fleet.player_id_ == 0 ? kPlayer0FleetAdjacent
-                                                    : kPlayer1FleetAdjacent;
-                future_info[i][{p.y == 0 ? kSize - 1 : p.y - 1, (int)p.x}]
-                    .flags |= fleet.player_id_ == 0 ? kPlayer0FleetAdjacent
-                                                    : kPlayer1FleetAdjacent;
-                future_info[i][{p.y == kSize - 1 ? 0 : p.y + 1, (int)p.x}]
-                    .flags |= fleet.player_id_ == 0 ? kPlayer0FleetAdjacent
-                                                    : kPlayer1FleetAdjacent;
+                future_info[i][p].n_ships[fleet.player_id_] = clipped_n_ships;
             }
             for (const auto& [_, shipyard] : state_i.shipyards_) {
                 const auto& p = shipyard.position_;
-                future_info[i][{p.y, p.x}].flags |= shipyard.player_id_ == 0
-                                                        ? kPlayer0Shipyard
-                                                        : kPlayer1Shipyard;
+                future_info[i][p].flags |= shipyard.player_id_ == 0
+                                               ? kPlayer0Shipyard
+                                               : kPlayer1Shipyard;
+                future_info[i][p].n_ships[shipyard.player_id_] +=
+                    min(shipyard.ship_count_, (short)255);
             }
             for (auto y = 0; y < kSize; y++)
                 for (auto x = 0; x < kSize; x++)
@@ -1656,8 +1674,10 @@ int main() {
 // clang-format on
 #endif
 
-// TODO: root node 以外はもっと子の数を制限したほうがいいかも -> done
 // TODO: 艦隊が合体する時、fleetの数に制限をつける
-// - そもそも合体考えなくていいかも
+// - [優先] そもそも合体考えなくていいかも
 // TODO: 艦隊が U ターンする時、拾う数にペナルティ？
 // TODO: どうしても spawn が選ばれやすくなるのをなんとかしたい
+// TODO: 貪欲を候補に入れる
+// TODO: spawn を最大にする
+// [最優先] 衝突させるなら相手より多い数にする
