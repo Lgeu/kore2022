@@ -1620,7 +1620,8 @@ struct MCTSNode {
                                                    NNUEFeature::kPlayer1Fleet;
 
                 fill((float*)dp.begin(), (float*)dp.end(), -1e30f);
-                fill((char*)dp_from.begin(), (char*)dp_from.end(), 255);
+                fill((signed char*)dp_from.begin(), (signed char*)dp_from.end(),
+                     -1);
 
                 dp[0][0][5][5] = 0.0f;
                 // 下 3 ビットで、0-3 が N-W 、7 が None
@@ -2061,6 +2062,9 @@ struct MCTSNode {
                         }
                         assert(path_step > 0);
                         const auto number = number_direction >> 3;
+                        if (number < 0) {
+                            assert(false);
+                        }
                         if (number)
                             flight_plan += to_string(number);
                         flight_plan += "NESW"[direction];
@@ -2249,10 +2253,11 @@ struct MCTSNode {
                         normalize(shipyard.position_.y + target_dy);
                     const auto target_x =
                         normalize(shipyard.position_.x + target_dx);
-                    const auto min_n_ships =
-                        future_info_[abs(target_dy) + abs(target_dx)]
-                                    [{target_y, target_x}]
-                                        .n_ships[1 - shipyard.player_id_];
+                    const auto min_n_ships = max(
+                        1,
+                        (int)future_info_[abs(target_dy) + abs(target_dx)]
+                                         [{target_y, target_x}]
+                                             .n_ships[1 - shipyard.player_id_]);
                     auto max_n_ships = shipyard.ship_count_;
                     auto n_ships_tensor_ab_child = n_ships_tensor[ab].Clone();
                     const auto n_ships = DetermineNShips(
@@ -2261,6 +2266,10 @@ struct MCTSNode {
                     // 航路を決める
                     const auto flight_plan = DetermineFlightPlan(
                         target_dy, target_dx, best_direction);
+
+                    if (Fleet::MaxFlightPlanLenForShipCount(n_ships) <
+                        (int)flight_plan.size())
+                        continue;
 
                     // TODO: 経路に障害物がないか検証
                     if (kEnablePredictionLogging) {
@@ -2430,6 +2439,7 @@ struct MCTSNode {
 
     int DetermineNShips(const int min_n_ships, const int max_n_ships,
                         nn::TensorBuffer<float, 32>& t) const {
+        assert(min_n_ships <= max_n_ships);
         const auto min_quantized_n_ships =
             kNShipsQuantizationTable[min_n_ships];
         const auto max_quantized_n_ships =
@@ -2439,7 +2449,7 @@ struct MCTSNode {
 
         for (auto i = 0; i < 32; i++)
             if (i < min_quantized_n_ships || max_quantized_n_ships < i)
-                t[i] = -1e30f;
+                t[i] = -1e25f;
         auto quantized_n_ships = -100;
         nn::F::SampleFromLogit(t, quantized_n_ships);
         const auto n_ships = uniform_int_distribution<>(
@@ -2705,10 +2715,9 @@ struct NNUEMCTSAgent : Agent {
 
         // 接戦なら特徴抽出
         [[maybe_unused]] const auto approx_scores = state.ComputeApproxScore();
-        if (/*state.step_ < 100 ||
-            max(approx_scores[0], approx_scores[1]) <
-                3.0 * min(approx_scores[0], approx_scores[1])*/
-            true) {
+        if (                                          /*state.step_ < 100 || */
+            max(approx_scores[0], approx_scores[1]) > // 逆
+            3.0 * min(approx_scores[0], approx_scores[1])) {
 
             const auto features = NNUEFeature(state);
 
@@ -2967,10 +2976,57 @@ struct NNUEMCTSAgent : Agent {
 #ifdef TEST_PREDICTION
 int main() {
     //
-    TestPrediction("36385265.kif", "parameters_01340000.bin");
-    // TestPrediction("37984903.kif", "parameters_01340000.bin");
+    // TestPrediction("36385265.kif", "parameters_01340000.bin");
+    TestPrediction("37984903.kif", "parameters_01340000.bin");
+
+    // TestPrediction("36670009.kif", "parameters_01340000.bin");
+    //  TestPrediction("36846914.kif", "parameters_01340000.bin");
 }
 // clang-format off
 // clang++ -DTEST_PREDICTION nnue.cpp -std=c++17 -Wall -Wextra -march=native -l:libblas.so.3 -fsanitize=address -g
+// clang-format on
+#endif
+
+#ifdef SELF_PLAY
+int main() {
+    const auto parameter_filename = "parameters_01340000.bin";
+    const auto kif_filename = "36846914.kif"; // 初期状態用
+
+    static auto agent_mcts = NNUEMCTSAgent();
+    agent_mcts.ReadParameters(parameter_filename);
+
+    auto is = ifstream(kif_filename);
+    if (!is) {
+        throw runtime_error(string("ファイル ") + kif_filename +
+                            string("を開けなかったよ"));
+    }
+    KifHeader().Read(is);
+
+    // 罫線を読み捨てる
+    string line;
+    is >> line; // "==="
+
+    // 0 ターン目の行動を読み捨てる
+    int zero0, zero1;
+    is >> zero0 >> zero1;
+
+    // struct NNUEData {
+    //     vector<int> shipyard_feature_;
+    //     array<float, NNUEFeature::kNGlobalFeatures> global_feature_;
+    //     ActionTarget target_;
+    //     PlayerId player_id_;
+    // };
+
+    // 状態を読み取る
+    auto state = State().Read(is);
+
+    while (state.step_ < 400) {
+        state.Print();
+        auto action = agent_mcts.ComputeNextMove(state);
+        state = state.Next(action);
+    }
+}
+// clang-format off
+// clang++ -DSELF_PLAY nnue.cpp -std=c++17 -Wall -Wextra -march=native -l:libblas.so.3  -g -O3 -fsanitize=address
 // clang-format on
 #endif
