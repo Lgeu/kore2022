@@ -1937,6 +1937,7 @@ struct MCTSNode {
                                            relative_position);
 
                     // n_steps を、position から定まる可能なものから決める
+                    // 効率が悪いのは除外する
                     auto n_steps_candidates = array<bool, 24>();
                     const auto [target_u, target_v] =
                         TranslatePosition221ToUV(relative_position);
@@ -1946,18 +1947,20 @@ struct MCTSNode {
                         normalize(shipyard.position_.y + target_relative_y);
                     const auto target_x =
                         normalize(shipyard.position_.x + target_relative_x);
+                    auto max_kore = -1e-30f; // -eps
                     for (auto step = relative_position < 121 ? 2 : 1;
                          step <= 21; step += 2)
                         for (auto plan_length = 1;
                              plan_length <= min(kMaxPlanLength, step);
-                             plan_length++)
+                             plan_length++) {
+                            const auto& k =
+                                dp[step][plan_length][target_u][target_v];
                             n_steps_candidates[step] |=
-                                dp[step][plan_length][target_u][target_v] >=
-                                    0.0f &&
                                 (future_info_[step][{target_y, target_x}]
                                      .flags &
-                                 mask_plan_length_1);
-                    // hogehogehogehogehogehogehogehogehogehogehogehogehogehogehogehogehogehoge
+                                 mask_plan_length_1) &&
+                                chmax(max_kore, k);
+                        }
 
                     auto n_steps_tensor_ab_child = n_steps_tensor[ab].Clone();
                     for (auto i = 0; i < 24; i++)
