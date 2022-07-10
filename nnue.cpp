@@ -1423,18 +1423,23 @@ struct MCTSNode {
             if (n_ships < kConvertCost)
                 action_type_tensor[b][3] = -1e30f;
 
-            // とどめを刺す
-            if ((value_ > 0.999 && player_id == 0) ||
-                (value_ < 0.001 && player_id == 1)) {
-                action_type_tensor[b][3] += 3.0;
-            }
-
             // 調子に乗って造船所を造りすぎないようにする
             if (state.players_[player_id].shipyard_ids_.size() >= 32)
                 action_type_tensor[b][3] = -1e30f;
         }
         value_ /= batch_size;
+        value_ = clamp(value_, -12.0f, 12.0f);
         value_ = 1.0f / (1.0f + exp(-value_));
+
+        for (auto b = 0; b < batch_size; b++) {
+            const auto player_id =
+                b < (int)state.players_[0].shipyard_ids_.size() ? 0 : 1;
+            // とどめを刺す
+            if ((value_ > 0.999 && player_id == 0) ||
+                (value_ < 0.001 && player_id == 1)) {
+                action_type_tensor[b][3] += 3.0;
+            }
+        }
     }
 
     auto NShipyards() const { return (int)state_.shipyards_.size(); }
