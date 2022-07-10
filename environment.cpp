@@ -1004,7 +1004,9 @@ struct SpawnAgent : Agent {
     Action ComputeNextMove(const State& state, const PlayerId player_id) const {
         auto kore = state.players_[player_id].kore_;
         auto action = Action();
-        for (const auto& [shipyard_id, shipyard] : state.shipyards_) {
+        for (auto it = state.shipyards_.rbegin(); it != state.shipyards_.rend();
+             ++it) {
+            const auto& [shipyard_id, shipyard] = *it;
             if (shipyard.player_id_ != player_id)
                 continue;
             if (kore < 10.0)
@@ -1012,7 +1014,7 @@ struct SpawnAgent : Agent {
             const auto max_spawn = shipyard.MaxSpawn();
             const auto n_spawn = min(max_spawn, (int)(kore / kSpawnCost));
             kore -= n_spawn * kSpawnCost;
-            const auto [it, inserted] = action.actions.insert(
+            const auto [_, inserted] = action.actions.insert(
                 make_pair(shipyard_id,
                           ShipyardAction(ShipyardActionType::kSpawn, n_spawn)));
             assert(inserted);

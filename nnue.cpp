@@ -1259,7 +1259,9 @@ struct ReachableNShips {
             assert(action1.actions.size() == 0);
             state = state.Next(action);
 
-            for (const auto& [_, shipyard] : state.shipyards_) {
+            for (auto it = state.shipyards_.rbegin();
+                 it != state.shipyards_.rend(); ++it) {
+                const auto& [_, shipyard] = *it;
                 const auto [sy, sx] = shipyard.position_;
                 const auto delta = i == 0
                                        ? shipyard.ship_count_
