@@ -1966,7 +1966,7 @@ struct MCTSNode {
                         normalize(shipyard.position_.x + target_relative_x);
                     auto max_kore = -1e-30f; // -eps
                     for (auto step = relative_position < 121 ? 2 : 1;
-                         step <= 21; step += 2)
+                         step <= 21; step += 2) {
                         for (auto plan_length = 1;
                              plan_length <= min(kMaxPlanLength, step);
                              plan_length++) {
@@ -1978,6 +1978,8 @@ struct MCTSNode {
                                  mask_plan_length_1) &&
                                 chmax(max_kore, k);
                         }
+                        max_kore *= 1.0201f;
+                    }
 
                     auto n_steps_tensor_ab_child = n_steps_tensor[ab].Clone();
                     for (auto i = 0; i < 24; i++)
@@ -2993,7 +2995,8 @@ int main() {
 #ifdef SELF_PLAY
 int main() {
     const auto parameter_filename = "parameters_01340000.bin";
-    const auto kif_filename = "36846914.kif"; // 初期状態用
+    // const auto kif_filename = "36846914.kif"; // 初期状態用
+    const auto kif_filename = "36385265.kif";
 
     static auto agent_mcts = NNUEMCTSAgent();
     agent_mcts.ReadParameters(parameter_filename);
