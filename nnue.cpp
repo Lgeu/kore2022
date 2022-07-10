@@ -524,8 +524,8 @@ struct MCTSNode {
     float value_;   // player 0 視点の状態評価値
     int n_visited_; // 選ばれた回数
 
-    static constexpr auto kMaxNChildrenRoot = 12;
-    static constexpr auto kMaxNChildren = 3;
+    static constexpr auto kMaxNChildrenRoot = 8;
+    static constexpr auto kMaxNChildren = 2;
 
     array<array<MCTSAction, kMaxNChildrenRoot>, 2> candidate_actions_;
     array<array<int, kMaxNChildrenRoot>, kMaxNChildrenRoot> child_nodes_indices;
