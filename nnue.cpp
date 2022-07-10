@@ -2555,7 +2555,7 @@ struct NNUEMCTSAgent : Agent {
         const auto t0 = Time();
         auto iteration = 0;
 
-        while (Time() - t0 < 2.9) {
+        while (Time() - t0 < 2.8) {
             auto current_node_index = 0;
             while (true) {
                 auto& node = MCTSNode::nodes_buffer_[current_node_index];
