@@ -1168,10 +1168,11 @@ struct NNUEFeature {
     }
 
     auto QuantizeFieldKore(const double kore, const int step) {
-        const auto result = clamp((int)(kore / kore_90_percentiles[step] *
-                                        kFieldKoreResolution),
-                                  0, kFieldKoreResolution) -
-                            1;
+        const auto result =
+            clamp((int)(kore / kore_90_percentiles[min(step, 399)] *
+                        kFieldKoreResolution),
+                  0, kFieldKoreResolution) -
+            1;
         assert(-1 <= result && result < kFieldKoreResolution);
         return result;
     }
