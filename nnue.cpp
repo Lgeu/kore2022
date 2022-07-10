@@ -1607,19 +1607,20 @@ struct MCTSNode {
                 const auto b = action_batch_indices[ab];
                 const auto shipyard_id = action_shipyard_ids[ab];
                 const auto& shipyard = state_.shipyards_.at(shipyard_id);
+                // 自軍の艦隊も弾くことにする
                 const auto mask_opponent =
                     shipyard.player_id_ == 0
                         ? NNUEFeature::kPlayer1Shipyard |
                               NNUEFeature::kPlayer1Fleet |
-                              NNUEFeature::kPlayer1FleetAdjacent
+                              NNUEFeature::kPlayer1FleetAdjacent |
+                              NNUEFeature::kPlayer0Fleet
                         : NNUEFeature::kPlayer0Shipyard |
                               NNUEFeature::kPlayer0Fleet |
-                              NNUEFeature::kPlayer0FleetAdjacent;
+                              NNUEFeature::kPlayer0FleetAdjacent |
+                              NNUEFeature::kPlayer1Fleet;
                 const auto mask_plan_length_1 =
-                    shipyard.player_id_ == 0 ? NNUEFeature::kPlayer0Shipyard |
-                                                   NNUEFeature::kPlayer0Fleet
-                                             : NNUEFeature::kPlayer1Shipyard |
-                                                   NNUEFeature::kPlayer1Fleet;
+                    shipyard.player_id_ == 0 ? NNUEFeature::kPlayer0Shipyard
+                                             : NNUEFeature::kPlayer1Shipyard;
 
                 fill((float*)dp.begin(), (float*)dp.end(), -1e30f);
                 fill((signed char*)dp_from.begin(), (signed char*)dp_from.end(),
