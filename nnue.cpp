@@ -1529,9 +1529,9 @@ struct MCTSNode {
                         min(shipyard.MaxSpawn(),
                             player_spawn_capacities[idx_children]
                                                    [shipyard.player_id_]);
-
-                    for (auto i = max_spawn + 1; i < 12; i++)
-                        n_ships_tensor[ab][i] = -1e30f;
+                    for (auto i = 1; i < 12; i++)
+                        if (i != max_spawn)
+                            n_ships_tensor[ab][i] = -1e30f;
                     auto n_ships = 0;
                     // spawn に関しては quantize の前後が同じ
                     nn::F::SampleFromLogit(n_ships_tensor[ab], n_ships);
