@@ -2495,7 +2495,7 @@ struct MCTSNode {
         if (action.policy_ == 0.0f)
             return 0.0f;
         const auto q = (1.0f + action.worth_) / (float)(1 + action.n_chosen_);
-        static constexpr auto kPUCTCoef = 0.5f;
+        static constexpr auto kPUCTCoef = 2.0f;
         const auto u = kPUCTCoef * action.policy_ * sqrt((float)n_visited_) /
                        (float)(1 + action.n_chosen_);
         return q + u;
