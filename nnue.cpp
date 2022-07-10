@@ -1225,6 +1225,14 @@ struct MCTSAction {
             }
         }
     }
+
+    auto NLaunchActions() const {
+        auto result = 0;
+        for (const auto& [shipyard_id, shipyard_action] : action_.actions) {
+            result += shipyard_action.type_ == ShipyardActionType::kLaunch;
+        }
+        return result;
+    }
 };
 
 // struct MCTSPairedAction {
@@ -2365,22 +2373,42 @@ struct MCTSNode {
         // candidate_actions_ から policy_ を近似計算
         for (auto player_id = 0; player_id < 2; player_id++) {
             auto hash_to_index = unordered_map<unsigned, int>();
-            for (auto idx_children = 0;
-                 idx_children < (IsRoot() ? kMaxNChildrenRoot : kMaxNChildren);
+            auto n_all_spawn_actions = 0;
+            auto max_not_all_spawn_policy = 1.0f / (float)MaxNChildren();
+            for (auto idx_children = 0; idx_children < MaxNChildren();
                  idx_children++) {
                 auto& action = candidate_actions_[player_id][idx_children];
                 action.ComputeHash();
+                const auto n_launch_actions = action.NLaunchActions();
+                if (n_launch_actions == 0) {
+                    n_all_spawn_actions++;
+                }
                 const auto it = hash_to_index.find(action.hash_);
                 if (it != hash_to_index.end()) {
                     // もう見た
-                    candidate_actions_[player_id][it->second].policy_ +=
-                        1.0f /
-                        (float)(IsRoot() ? kMaxNChildrenRoot : kMaxNChildren);
+                    auto& policy =
+                        candidate_actions_[player_id][it->second].policy_;
+                    policy += 1.0f / (float)MaxNChildren();
+                    if (n_launch_actions > 0) {
+                        chmax(max_not_all_spawn_policy, policy);
+                    }
                     continue;
                 }
                 hash_to_index.insert(make_pair(action.hash_, idx_children));
-                action.policy_ = 1.0f / (float)(IsRoot() ? kMaxNChildrenRoot
-                                                         : kMaxNChildren);
+                action.policy_ = 1.0f / (float)MaxNChildren();
+            }
+
+            // spawn の policy が高くなりがちなので、制限する
+            const auto all_spawn_policy_limit =
+                max(1.0f, (float)n_all_spawn_actions /
+                              ((float)(MaxNChildren() - n_all_spawn_actions) +
+                               1e-6f)) *
+                max_not_all_spawn_policy;
+            for (auto idx_children = 0; idx_children < MaxNChildren();
+                 idx_children++) {
+                auto& action = candidate_actions_[player_id][idx_children];
+                if (action.NLaunchActions() == 0)
+                    chmin(action.policy_, all_spawn_policy_limit);
             }
         }
 
@@ -2389,6 +2417,10 @@ struct MCTSNode {
         // これは外側でやってもいいか……？
 
         expanded_ = true;
+    }
+
+    inline int MaxNChildren() const {
+        return IsRoot() ? kMaxNChildrenRoot : kMaxNChildren;
     }
 
     int DetermineNShips(const int min_n_ships, const int max_n_ships,
@@ -2667,10 +2699,11 @@ struct NNUEMCTSAgent : Agent {
         const auto action = Action().Read(state.shipyard_id_mapper_, is);
 
         // 接戦なら特徴抽出
-        const auto approx_scores = state.ComputeApproxScore();
-        if (state.step_ < 100 ||
+        [[maybe_unused]] const auto approx_scores = state.ComputeApproxScore();
+        if (/*state.step_ < 100 ||
             max(approx_scores[0], approx_scores[1]) <
-                3.0 * min(approx_scores[0], approx_scores[1])) {
+                3.0 * min(approx_scores[0], approx_scores[1])*/
+            true) {
 
             const auto features = NNUEFeature(state);
 
@@ -2715,13 +2748,14 @@ struct NNUEMCTSAgent : Agent {
                     cout << endl;
                 }
             }
-            cout << kTextBold << "--- Predicted actions ---" << kResetTextStyle
-                 << endl;
-            const auto predicted_actions = agent.ComputeNextMove(state);
-            for (const auto& [shipyard_id, shipyard_action] :
-                 predicted_actions.actions) {
-                cout << shipyard_id << ": " << shipyard_action.Str() << endl;
-            }
+            // cout << kTextBold << "--- Predicted actions ---" <<
+            // kResetTextStyle
+            //      << endl;
+            // const auto predicted_actions = agent.ComputeNextMove(state);
+            // for (const auto& [shipyard_id, shipyard_action] :
+            //      predicted_actions.actions) {
+            //     cout << shipyard_id << ": " << shipyard_action.Str() << endl;
+            // }
 
             cout << kTextBold << "--- MCTS Predicted actions ---"
                  << kResetTextStyle << endl;
@@ -2750,7 +2784,8 @@ struct NNUEMCTSAgent : Agent {
             }
             cout << endl;
 
-            const auto get_top_n = [](const auto& tensor, const int n) {
+            [[maybe_unused]] const auto get_top_n = [](const auto& tensor,
+                                                       const int n) {
                 auto result = vector<int>(tensor.size());
                 iota(result.begin(), result.end(), 0);
                 partial_sort(result.begin(),
@@ -2928,6 +2963,7 @@ struct NNUEMCTSAgent : Agent {
 int main() {
     //
     TestPrediction("36385265.kif", "parameters_01340000.bin");
+    // TestPrediction("37984903.kif", "parameters_01340000.bin");
 }
 // clang-format off
 // clang++ -DTEST_PREDICTION nnue.cpp -std=c++17 -Wall -Wextra -march=native -l:libblas.so.3 -fsanitize=address -g
