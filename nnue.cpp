@@ -524,8 +524,8 @@ struct MCTSNode {
     float value_;   // player 0 視点の状態評価値
     int n_visited_; // 選ばれた回数
 
-    static constexpr auto kMaxNChildrenRoot = 8;
-    static constexpr auto kMaxNChildren = 2;
+    static constexpr auto kMaxNChildrenRoot = 12;
+    static constexpr auto kMaxNChildren = 4;
 
     array<array<MCTSAction, kMaxNChildrenRoot>, 2> candidate_actions_;
     array<array<int, kMaxNChildrenRoot>, kMaxNChildrenRoot> child_nodes_indices;
@@ -608,8 +608,15 @@ struct MCTSNode {
                 action_type_tensor[b][3] = -1e30f;
 
             // 調子に乗って造船所を造りすぎないようにする
-            if (state.players_[player_id].shipyard_ids_.size() >= 32)
+            if ((int)state.players_[player_id].shipyard_ids_.size() >=
+                max(16,
+                    (int)state.players_[1 - player_id].shipyard_ids_.size() +
+                        1))
                 action_type_tensor[b][3] = -1e30f;
+
+            if (!IsRoot()) {
+                action_type_tensor[b][3] = -1e30f;
+            }
         }
         value_ /= batch_size;
         value_ = clamp(value_, -12.0f, 12.0f);
@@ -642,7 +649,7 @@ struct MCTSNode {
             &shipyard_id_buffer[codes_offset_]);
     }
 
-    inline auto IsRoot() const { return codes_offset_ == 0; }
+    inline bool IsRoot() const { return codes_offset_ == 0; }
 
     auto Expand(const SpawnDecoder& spawn_decoder,
                 const MoveDecoder& move_decoder,
@@ -1600,16 +1607,19 @@ struct MCTSNode {
             }
 
             // spawn の policy が高くなりがちなので、制限する
-            const auto all_spawn_policy_limit =
-                max(1.0f, (float)n_all_spawn_actions /
-                              ((float)(MaxNChildren() - n_all_spawn_actions) +
-                               1e-6f)) *
-                max_not_all_spawn_policy;
-            for (auto idx_children = 0; idx_children < MaxNChildren();
-                 idx_children++) {
-                auto& action = candidate_actions_[player_id][idx_children];
-                if (action.NLaunchActions() == 0)
-                    chmin(action.policy_, all_spawn_policy_limit);
+            if (IsRoot()) {
+                const auto all_spawn_policy_limit =
+                    max(1.0f,
+                        (float)n_all_spawn_actions /
+                            ((float)(MaxNChildren() - n_all_spawn_actions) +
+                             1e-6f)) *
+                    max_not_all_spawn_policy;
+                for (auto idx_children = 0; idx_children < MaxNChildren();
+                     idx_children++) {
+                    auto& action = candidate_actions_[player_id][idx_children];
+                    if (action.NLaunchActions() == 0)
+                        chmin(action.policy_, all_spawn_policy_limit);
+                }
             }
         }
 
@@ -1651,7 +1661,7 @@ struct MCTSNode {
         auto result = array<signed char, 2>();
 
         for (auto player_id = 0; player_id < 2; player_id++) {
-            auto max_score = 0.0f;
+            auto max_score = -1e30f;
             auto best_action_index = 0;
             for (auto idx_actions = 0;
                  idx_actions < (IsRoot() ? kMaxNChildrenRoot : kMaxNChildren);
@@ -1671,12 +1681,20 @@ struct MCTSNode {
 
     inline float UCTScore(const MCTSAction& action) const {
         if (action.policy_ == 0.0f)
-            return 0.0f;
-        const auto q = (1.0f + action.worth_) / (float)(1 + action.n_chosen_);
-        static constexpr auto kPUCTCoef = 2.0f;
-        const auto u = kPUCTCoef * action.policy_ * sqrt((float)n_visited_) /
-                       (float)(1 + action.n_chosen_);
-        return q + u;
+            return -1e30f;
+        if (IsRoot()) {
+            const auto q =
+                (1.0f + action.worth_) / (float)(1 + action.n_chosen_);
+            static constexpr auto kPUCTCoef = 1.0f;
+            const auto u = kPUCTCoef * action.policy_ *
+                           sqrt((float)n_visited_) /
+                           (float)(1 + action.n_chosen_);
+            return q + u;
+        } else {
+            const auto r =
+                uniform_real_distribution<>(1e-5f, 1.0f - 1e-5f)(rng);
+            return log(action.policy_ / -log(r));
+        }
     }
 };
 
@@ -1724,6 +1742,8 @@ struct NNUEMCTSAgent : Agent {
         auto& root_node = MCTSNode::nodes_buffer_[MCTSNode::n_nodes_++];
         root_node = MCTSNode(state, nnue);
 
+        static constexpr auto kSimulationSteps = 20;
+
         struct PathInfo {
             int node_index;
             array<signed char, 2> action_indices;
@@ -1733,9 +1753,9 @@ struct NNUEMCTSAgent : Agent {
         const auto t0 = Time();
         auto iteration = 0;
 
-        while (Time() - t0 < 2.8) {
+        while (Time() - t0 < 2.4) {
             auto current_node_index = 0;
-            while (true) {
+            for (auto depth = 0; depth < kSimulationSteps; depth++) {
                 auto& node = MCTSNode::nodes_buffer_[current_node_index];
                 if (!node.expanded_) {
                     // action の候補が選出されていない状態
@@ -1759,9 +1779,8 @@ struct NNUEMCTSAgent : Agent {
                     action.Merge(action1);
                     MCTSNode::nodes_buffer_[child_node_index] =
                         MCTSNode(node.state_.Next(action), nnue);
-                    // path_node_indices.push_back({child_node_index, {}});
                     current_node_index = child_node_index;
-                    break;
+                    // break;
                 }
                 current_node_index = child_node_index;
             }
