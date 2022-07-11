@@ -250,7 +250,7 @@ struct NNUE {
         for (auto b = 0; b < batch_size; b++)
             x1[b] += x2[b];
 
-        static constexpr auto kNegativeSlope = 1.0f / 64.0f;
+        static constexpr auto kNegativeSlope = 1.0f / 1024.0f;
         for (auto b = 0; b < batch_size; b++)
             x1[b].LeakyRelu_(kNegativeSlope);
 
@@ -1812,7 +1812,7 @@ struct NNUEMCTSAgent : Agent {
         cerr << "iteration=" << iteration << endl;
         auto best_actions = array<Action, 2>();
         for (auto player_id = 0; player_id < 2; player_id++) {
-            auto max_n_chosen = 0;
+            auto max_n_chosen = 0.0;
             cerr << "action,policy,n_chosen,mean_worth" << endl;
             for (auto idx_action = 0; idx_action < MCTSNode::kMaxNChildrenRoot;
                  idx_action++) {
@@ -1820,9 +1820,11 @@ struct NNUEMCTSAgent : Agent {
                     root_node.candidate_actions_[player_id][idx_action];
                 if (action.policy_ == 0.0f)
                     continue;
-
-                if (max_n_chosen < action.n_chosen_) {
-                    max_n_chosen = action.n_chosen_;
+                const auto action_n_chosen =
+                    action.n_chosen_ +
+                    action.worth_ / (double)(action.n_chosen_ + 1);
+                if (max_n_chosen < action_n_chosen) {
+                    max_n_chosen = action_n_chosen;
                     best_actions[player_id] = action.action_;
                 }
                 for (auto [shipyard_id, shipyard_action] :
@@ -2178,11 +2180,11 @@ struct NNUEMCTSAgent : Agent {
 #ifdef TEST_PREDICTION
 int main() {
     //
-    // TestPrediction("36385265.kif", "parameters_01340000.bin");
-    TestPrediction("37984903.kif", "parameters_01340000.bin");
+    // TestPrediction("36385265.kif", "parameters_02720000.bin");
+    TestPrediction("37984903.kif", "parameters_02720000.bin");
 
-    // TestPrediction("36670009.kif", "parameters_01340000.bin");
-    //  TestPrediction("36846914.kif", "parameters_01340000.bin");
+    // TestPrediction("36670009.kif", "parameters_02720000.bin");
+    //  TestPrediction("36846914.kif", "parameters_02720000.bin");
 }
 // clang-format off
 // clang++ -DTEST_PREDICTION nnue.cpp -std=c++17 -Wall -Wextra -march=native -l:libblas.so.3 -fsanitize=address -g
@@ -2191,7 +2193,7 @@ int main() {
 
 #ifdef SELF_PLAY
 int main() {
-    const auto parameter_filename = "parameters_01340000.bin";
+    const auto parameter_filename = "parameters_02720000.bin";
     // const auto kif_filename = "36846914.kif"; // 初期状態用
     const auto kif_filename = "36385265.kif";
 
