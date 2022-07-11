@@ -736,6 +736,10 @@ struct MCTSNode {
                     for (auto i = 1; i < 12; i++)
                         if (i != max_spawn)
                             n_ships_tensor[ab][i] = -1e30f;
+                    // 最終盤は船を造らない
+                    if (state_.step_ >= 385) {
+                        n_ships_tensor[ab][max_spawn] -= 15.0f;
+                    }
                     auto n_ships = 0;
                     // spawn に関しては quantize の前後が同じ
                     nn::F::SampleFromLogit(n_ships_tensor[ab], n_ships);
