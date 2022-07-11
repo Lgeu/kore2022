@@ -609,7 +609,7 @@ struct MCTSNode {
 
             // 調子に乗って造船所を造りすぎないようにする
             if ((int)state.players_[player_id].shipyard_ids_.size() >=
-                max(16,
+                max(12,
                     (int)state.players_[1 - player_id].shipyard_ids_.size() +
                         1))
                 action_type_tensor[b][3] = -1e30f;
