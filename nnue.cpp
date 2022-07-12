@@ -526,6 +526,7 @@ struct MCTSNode {
 
     static constexpr auto kMaxNChildrenRoot = 12;
     static constexpr auto kMaxNChildren = 4;
+    static constexpr auto kScaling = 2.0f;
 
     array<array<MCTSAction, kMaxNChildrenRoot>, 2> candidate_actions_;
     array<array<int, kMaxNChildrenRoot>, kMaxNChildrenRoot> child_nodes_indices;
@@ -587,6 +588,8 @@ struct MCTSNode {
         nnue.Forward(batch_size, shipyard_feature_tensor, global_feature_tensor,
                      value_tensor, action_type_tensor, code_tensor);
         n_codes_ += batch_size;
+        for (auto b = 0; b < batch_size; b++)
+            action_type_tensor[b] *= kScaling;
 
         // value の集計
         for (auto b = 0; b < batch_size; b++) {
@@ -720,6 +723,8 @@ struct MCTSNode {
             static auto n_ships_tensor = SpawnDecoder::NShipsTensor<true>();
             spawn_decoder.Forward(action_batch_size, action_decoder_in_tensor,
                                   n_ships_tensor);
+            for (auto b = 0; b < batch_size; b++)
+                n_ships_tensor[b] *= kScaling;
 
             // shipyard ごとに処理
             for (auto ab = 0; ab < action_batch_size; ab++) {
@@ -783,6 +788,11 @@ struct MCTSNode {
             move_decoder.Forward(action_batch_size, action_decoder_in_tensor,
                                  n_ships_tensor, relative_position_tensor,
                                  n_steps_tensor);
+            for (auto b = 0; b < batch_size; b++) {
+                n_ships_tensor[b] *= kScaling;
+                relative_position_tensor[b] *= kScaling;
+                n_steps_tensor[b] *= kScaling;
+            }
 
             // まず DP する
             static constexpr auto kMaxPlanLength = 9;
@@ -1367,6 +1377,11 @@ struct MCTSNode {
             attack_decoder.Forward(action_batch_size, action_decoder_in_tensor,
                                    n_ships_tensor, relative_position_tensor,
                                    direction_tensor);
+            for (auto b = 0; b < batch_size; b++) {
+                n_ships_tensor[b] *= kScaling;
+                relative_position_tensor[b] *= kScaling;
+                direction_tensor[b] *= kScaling;
+            }
 
             // shipyard ごとに処理
             for (auto ab = 0; ab < action_batch_size; ab++) {
@@ -1510,6 +1525,11 @@ struct MCTSNode {
             convert_decoder.Forward(action_batch_size, action_decoder_in_tensor,
                                     n_ships_tensor, relative_position_tensor,
                                     direction_tensor);
+            for (auto b = 0; b < batch_size; b++) {
+                n_ships_tensor[b] *= kScaling;
+                relative_position_tensor[b] *= kScaling;
+                direction_tensor[b] *= kScaling;
+            }
 
             // shipyard ごとに処理
             for (auto ab = 0; ab < action_batch_size; ab++) {
